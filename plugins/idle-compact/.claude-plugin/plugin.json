@@ -1,0 +1,14 @@
+{
+  "name": "idle-compact",
+  "version": "0.1.0",
+  "description": "Runs /compact while the session sits idle waiting on background work, before the prompt cache goes cold.",
+  "author": { "name": "Michael McKnight" },
+  "userConfig": {
+    "idleMinutes": {
+      "type": "number",
+      "title": "Idle minutes before compacting",
+      "description": "Minutes since the last model call before an idle session with background work running is compacted.",
+      "default": 50
+    }
+  }
+}
