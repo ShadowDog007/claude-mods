@@ -9,7 +9,7 @@ It compacts when all of these hold:
 3. The context holds at least `minContextTokens` (default **100,000**) tokens.
 4. `idleMinutes` (default **59**) have passed since the last model request of the main conversation was sent.
 
-It compacts at most once per idle stretch; the next model request re-arms it. When a turn ends with background work running, it sets a timer for the moment the idle time runs out and checks the conditions again when it fires, so there is no polling.
+It compacts at most once per idle stretch; the next model request re-arms it. When a turn ends with background work running, it sets a timer for the moment the idle time runs out and checks the conditions again when it fires.
 
 The idle time counts from when a request is sent, because that is when the prompt cache's lifetime is refreshed. Compacting just before the one-hour lifetime runs out means the compaction request still reads the conversation from cache, and the session wakes to a smaller context when the background work reports back. The default leaves a minute for the compaction request to be sent; keep `idleMinutes` under 60. This only helps where the session uses the one-hour cache; under the five-minute cache, the cache has expired long before any useful idle time.
 
@@ -29,7 +29,7 @@ Set them from `/config`, or in settings:
 ## Notes
 
 - Background tasks are taken from the `Stop` event at the end of each turn, and checked again just before compacting:
-  - Background subagents are checked live (`$.agent.list()`); one no longer pending, running or waiting no longer counts.
+  - Background subagents are checked live (`$.agent.list()`); one that is not pending, running or waiting does not count.
   - Shell commands and monitors have no live listing in the plugin API. Each sends a notification when it ends (stopped or killed too), which starts a turn, and that turn's `Stop` takes the count again.
 - An interrupted turn counts no background tasks, so nothing is compacted until a turn ends normally.
 - The context size is the input of the last model response, as the status line reports it.
