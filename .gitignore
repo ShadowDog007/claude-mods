@@ -1,1 +1,7 @@
+# Claude Code: personal settings, notes and worktrees
+.claude/settings.local.json
 .claude/worktrees/
+CLAUDE.local.md
+
+# Editor types Claude Code writes into a plugin it has loaded
+plugins/*/.claude-plugin/types/
