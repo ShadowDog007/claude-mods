@@ -29,21 +29,42 @@ function track($: EngineInterface, change: Partial<IdleCompactTracker>) {
 // along with the module, and `session.start` arms it again from the state.
 let timer: Timer | undefined;
 
-function disarm() {
+function disarm($: EngineInterface) {
   timer?.cancel();
   timer = undefined;
+  $.ui.status(undefined);
+}
+
+// The time of day `at` falls on, as hours and minutes.
+function clockTime(at: number) {
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+// Pins when the armed timer will compact, if the context is big enough for it
+// to; clears it otherwise. The status line is this plugin's own, beside the
+// engine's pinned notices, so it covers nothing else on screen.
+async function showSchedule($: EngineInterface, limits: Limits) {
+  const session = await read($, tracker);
+  const isDue = timer !== undefined && (session.contextTokens ?? 0) >= limits.minContextTokens;
+  $.ui.status(
+    isDue && session.lastModelCallAt !== null
+      ? `idle-compact scheduled for ${clockTime(session.lastModelCallAt + limits.idleMs)}`
+      : undefined,
+  );
 }
 
 // Sets the timer for when the session will have sat idle for the idle time,
 // if it is waiting on background work and has not compacted since its last
 // model request.
 async function arm($: EngineInterface, limits: Limits) {
-  disarm();
+  disarm($);
   const session = await read($, tracker);
   if (session.hasCompacted) return;
   if (session.backgroundTasks.length < 1 || session.lastModelCallAt === null) return;
   const remainingMs = session.lastModelCallAt + limits.idleMs - (await $.clock.now());
   timer = $.clock.after(Math.max(remainingMs, 0), () => compactIfIdle($, limits));
+  await showSchedule($, limits);
 }
 
 // The tasks from the last turn's snapshot still running now. Subagents are
@@ -59,6 +80,7 @@ async function runningTasks($: EngineInterface, tasks: IdleCompactTracker['backg
 
 async function compactIfIdle($: EngineInterface, limits: Limits) {
   timer = undefined;
+  $.ui.status(undefined);
   const session = await read($, tracker);
   if (session.hasCompacted) return;
   if (session.backgroundTasks.length < 1 || session.lastModelCallAt === null) return;
@@ -107,7 +129,7 @@ export const register: Register = (on, options) => {
   // A /clear starts the conversation over.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
-      disarm();
+      disarm($);
       await track($, IDLE);
     }
     return next(e);
@@ -115,13 +137,14 @@ export const register: Register = (on, options) => {
 
   on('session.measure', async ($, e, next) => {
     await track($, { contextTokens: e.context.tokens ?? null });
+    await showSchedule($, limits);
     return next(e);
   });
 
   on('turn.start', async ($, e, next) => {
     // Retaken when the turn stops, so none count while it runs; an
     // interrupted turn has no Stop and leaves none counted.
-    disarm();
+    disarm($);
     await track($, { backgroundTasks: [] });
     return next(e);
   });
