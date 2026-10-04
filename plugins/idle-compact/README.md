@@ -7,17 +7,17 @@ It compacts when all of these hold:
 1. The current turn has ended (the agent is not working).
 2. At least one background task (a background shell command, subagent, monitor, ...) is still running.
 3. The context holds at least `minContextTokens` (default **100,000**) tokens.
-4. `idleMinutes` (default **55**) have passed since the last model request of the main conversation was sent.
+4. `idleMinutes` (default **59**) have passed since the last model request of the main conversation was sent.
 
 It compacts at most once per idle stretch; the next model request re-arms it. When a turn ends with background work running, it sets a timer for the moment the idle time runs out and checks the conditions again when it fires, so there is no polling.
 
-The idle time counts from when a request is sent, because that is when the prompt cache's lifetime is refreshed. Compacting just before the one-hour lifetime runs out means the compaction request still reads the conversation from cache, and the session wakes to a smaller context when the background work reports back. If you raise `idleMinutes` towards 60, leave room for the compaction request to be sent in time. This only helps where the session uses the one-hour cache; under the five-minute cache, the cache has expired long before any useful idle time.
+The idle time counts from when a request is sent, because that is when the prompt cache's lifetime is refreshed. Compacting just before the one-hour lifetime runs out means the compaction request still reads the conversation from cache, and the session wakes to a smaller context when the background work reports back. The default leaves a minute for the compaction request to be sent; keep `idleMinutes` under 60. This only helps where the session uses the one-hour cache; under the five-minute cache, the cache has expired long before any useful idle time.
 
 ## Configuration
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `idleMinutes` | number | `55` | Minutes since the last model request before an idle session with background work running is compacted. |
+| `idleMinutes` | number | `59` | Minutes since the last model request before an idle session with background work running is compacted. |
 | `minContextTokens` | number | `100000` | Only compact when the context holds at least this many tokens. |
 
 Set them from `/config`, or in settings:

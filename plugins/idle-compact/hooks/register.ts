@@ -3,7 +3,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code';
 
 import type { IdleCompactTracker } from '../types';
 
-const DEFAULT_IDLE_MINUTES = 55;
+const DEFAULT_IDLE_MINUTES = 59;
 const DEFAULT_MIN_CONTEXT_TOKENS = 100_000;
 // A subagent still doing work; `idle` is a teammate waiting on a message.
 const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting']);

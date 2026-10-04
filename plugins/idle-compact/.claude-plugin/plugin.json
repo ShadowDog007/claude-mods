@@ -9,7 +9,7 @@
       "type": "number",
       "title": "Idle minutes before compacting",
       "description": "Minutes since the last model request before an idle session with background work running is compacted. Keep it under the prompt cache's one-hour lifetime.",
-      "default": 55
+      "default": 59
     },
     "minContextTokens": {
       "type": "number",

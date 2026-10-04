@@ -61,11 +61,11 @@ async function turn($: Engine, backgroundTasks: (typeof SHELL)[], tokens = 150_0
   await $.classic.Stop({ stop_hook_active: false, background_tasks: backgroundTasks });
 }
 
-test('compacts once, exactly 55 idle minutes after the last model request, with a background command running', async ($, on) => {
+test('compacts once, exactly 59 idle minutes after the last model request, with a background command running', async ($, on) => {
   const { clock, compacted } = engine(on);
   await turn($, [SHELL]);
 
-  await clock.advance(55 * MINUTE - 1);
+  await clock.advance(59 * MINUTE - 1);
   expect(compacted.count).toBe(0);
 
   await clock.advance(1);
@@ -156,7 +156,7 @@ test('carries on after a reload from what the session state holds', async ($, on
   // A reload: the module starts afresh, and no turn runs.
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
 
-  await clock.advance(55 * MINUTE);
+  await clock.advance(59 * MINUTE);
   expect(compacted.count).toBe(1);
 });
 
