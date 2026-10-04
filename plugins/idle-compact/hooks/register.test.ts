@@ -7,7 +7,6 @@ import type { IdleCompactTracker } from '../types';
 const MINUTE = 60_000;
 const SHELL = { id: 'b1', type: 'shell', status: 'running', description: 'npm run dev' };
 const IDLE: IdleCompactTracker = {
-  isTurnRunning: false,
   lastModelCallAt: null,
   contextTokens: null,
   backgroundTasks: [],
@@ -39,7 +38,6 @@ function engine(
   on('session.measure', (_$, e) => ({ changed: e.changed }));
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }));
   on('turn.start', (_$, e) => ({ turnId: e.turnId }));
-  on('turn.complete', (_$, e) => ({ text: e.answer }));
   on('classic.Stop', () => ({}));
   on('turn.step', async function* (_$, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null };
@@ -61,7 +59,6 @@ async function turn($: Engine, backgroundTasks: (typeof SHELL)[], tokens = 150_0
   for await (const _ of step);
   await $.session.measure({ context: { tokens, window: 200_000 }, rateLimits: [], changed: ['context'] });
   await $.classic.Stop({ stop_hook_active: false, background_tasks: backgroundTasks });
-  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' });
 }
 
 test('compacts once, 55 idle minutes after the last model request, with a background command running', async ($, on) => {
@@ -86,7 +83,7 @@ test('does not compact with no background work in flight', async ($, on) => {
   expect(compacted.count).toBe(0);
 });
 
-test('does not compact while a turn is running', async ($, on) => {
+test('does not compact while a turn runs, or after one is interrupted', async ($, on) => {
   const { clock, compacted } = engine(on);
   await turn($, [SHELL]);
   await $.turn.start({ text: '', turnId: 't2' });
@@ -140,7 +137,6 @@ test('keeps what it tracks in the session state', async ($, on) => {
   await turn($, [SHELL]);
 
   expect(state.value).toEqual({
-    isTurnRunning: false,
     lastModelCallAt: MINUTE,
     contextTokens: 150_000,
     backgroundTasks: [{ id: 'b1', type: 'shell' }],
@@ -151,7 +147,6 @@ test('keeps what it tracks in the session state', async ($, on) => {
 test('carries on after a reload from what the session state holds', async ($, on) => {
   const { clock, compacted } = engine(on, {
     tracker: {
-      isTurnRunning: false,
       lastModelCallAt: 0,
       contextTokens: 150_000,
       backgroundTasks: [{ id: 'b1', type: 'shell' }],

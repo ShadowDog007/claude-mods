@@ -13,7 +13,6 @@ const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting']);
 type Limits = { idleMs: number; minContextTokens: number };
 
 const IDLE: IdleCompactTracker = {
-  isTurnRunning: false,
   lastModelCallAt: null,
   contextTokens: null,
   backgroundTasks: [],
@@ -41,7 +40,7 @@ async function runningTasks($: EngineInterface, tasks: IdleCompactTracker['backg
 
 async function compactIfIdle($: EngineInterface, limits: Limits) {
   const session = await read($, tracker);
-  if (session.isTurnRunning || session.hasCompacted) return;
+  if (session.hasCompacted) return;
   if (session.backgroundTasks.length < 1 || session.lastModelCallAt === null) return;
   if ((session.contextTokens ?? 0) < limits.minContextTokens) return;
   if ((await $.clock.now()) - session.lastModelCallAt < limits.idleMs) return;
@@ -93,14 +92,15 @@ export const register: Register = (on, options) => {
   });
 
   on('turn.start', async ($, e, next) => {
-    // Retaken when the turn stops; an interrupted turn leaves none counted.
-    await track($, { isTurnRunning: true, backgroundTasks: [] });
+    // Retaken when the turn stops, so none count while it runs; an
+    // interrupted turn has no Stop and leaves none counted.
+    await track($, { backgroundTasks: [] });
     return next(e);
   });
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId === undefined) {
-      await track($, { isTurnRunning: true, lastModelCallAt: await $.clock.now(), hasCompacted: false });
+      await track($, { lastModelCallAt: await $.clock.now(), hasCompacted: false });
     }
     return yield* next(e);
   });
@@ -108,13 +108,8 @@ export const register: Register = (on, options) => {
   on('classic.Stop', async ($, e, next) => {
     if (e.agent_id === undefined) {
       const backgroundTasks = (e.background_tasks ?? []).map(({ id, type }) => ({ id, type }));
-      await track($, { isTurnRunning: false, backgroundTasks });
+      await track($, { backgroundTasks });
     }
-    return next(e);
-  });
-
-  on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) await track($, { isTurnRunning: false });
     return next(e);
   });
 };
