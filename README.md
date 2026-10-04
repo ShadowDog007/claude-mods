@@ -14,4 +14,4 @@ Then browse and install plugins with `/plugin`.
 
 | Plugin | Description |
 | --- | --- |
-| [idle-compact](plugins/idle-compact) | Runs `/compact` while the session sits idle waiting on background work, before the prompt cache goes cold. |
+| [idle-compact](plugins/idle-compact) | Runs `/compact` while the session sits idle waiting on background work, right before the prompt cache expires. |

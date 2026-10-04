@@ -1,18 +1,23 @@
 import type { EngineInterface, Register } from 'claude-code'
 
-const DEFAULT_IDLE_MINUTES = 50
-const POLL_MS = 30_000
+const DEFAULT_IDLE_MINUTES = 55
+const DEFAULT_MIN_CONTEXT_TOKENS = 100_000
+// How late a compaction may land past the idle time.
+const POLL_MS = 5_000
 // A subagent still doing work; `idle` is a teammate waiting on a message.
 const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting'])
 
 type BackgroundTask = { id: string; type: string }
+type Limits = { idleMs: number; minContextTokens: number }
 
-// Whether a main-loop turn is running, when its last model request ended, and
-// the background tasks the last finished turn left in flight. Reset with the
+// Whether a main-loop turn is running, when its last model request was sent
+// (the prompt cache's lifetime runs from there), the context's size, and the
+// background tasks the last finished turn left in flight. Reset with the
 // module, so a reload waits for the next turn before compacting.
 const session = {
   isTurnRunning: false,
   lastModelCallAt: undefined as number | undefined,
+  contextTokens: undefined as number | undefined,
   backgroundTasks: [] as BackgroundTask[],
   // One compaction per idle stretch: the next model call re-arms it.
   hasCompacted: false,
@@ -29,10 +34,11 @@ async function runningTasks($: EngineInterface) {
   return session.backgroundTasks.filter(task => task.type !== 'subagent' || activeAgents.has(task.id))
 }
 
-async function compactIfIdle($: EngineInterface, idleMs: number) {
+async function compactIfIdle($: EngineInterface, limits: Limits) {
   if (session.isTurnRunning || session.hasCompacted) return
   if (session.backgroundTasks.length < 1 || session.lastModelCallAt === undefined) return
-  if ((await $.clock.now()) - session.lastModelCallAt < idleMs) return
+  if ((session.contextTokens ?? 0) < limits.minContextTokens) return
+  if ((await $.clock.now()) - session.lastModelCallAt < limits.idleMs) return
 
   session.backgroundTasks = await runningTasks($)
   if (session.backgroundTasks.length < 1) return
@@ -49,12 +55,24 @@ async function compactIfIdle($: EngineInterface, idleMs: number) {
   }
 }
 
+function positive(value: unknown, fallback: number) {
+  const number = Number(value)
+  return number > 0 ? number : fallback
+}
+
 export const register: Register = (on, options) => {
-  const configured = Number(options.idleMinutes)
-  const idleMs = (configured > 0 ? configured : DEFAULT_IDLE_MINUTES) * 60_000
+  const limits: Limits = {
+    idleMs: positive(options.idleMinutes, DEFAULT_IDLE_MINUTES) * 60_000,
+    minContextTokens: positive(options.minContextTokens, DEFAULT_MIN_CONTEXT_TOKENS),
+  }
 
   on('session.start', ($, e, next) => {
-    $.clock.every(POLL_MS, () => compactIfIdle($, idleMs))
+    $.clock.every(POLL_MS, () => compactIfIdle($, limits))
+    return next(e)
+  })
+
+  on('session.measure', ($, e, next) => {
+    session.contextTokens = e.context.tokens
     return next(e)
   })
 
@@ -66,15 +84,12 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId === undefined) session.isTurnRunning = true
-    try {
-      return yield* next(e)
-    } finally {
-      if (e.agentId === undefined) {
-        session.lastModelCallAt = await $.clock.now()
-        session.hasCompacted = false
-      }
+    if (e.agentId === undefined) {
+      session.isTurnRunning = true
+      session.lastModelCallAt = await $.clock.now()
+      session.hasCompacted = false
     }
+    return yield* next(e)
   })
 
   on('classic.Stop', ($, e, next) => {

@@ -13,7 +13,7 @@
     {
       "name": "idle-compact",
       "source": "./idle-compact",
-      "description": "Runs /compact while the session sits idle waiting on background work, before the prompt cache goes cold.",
+      "description": "Runs /compact while the session sits idle waiting on background work, right before the prompt cache expires.",
       "version": "0.1.0"
     }
   ]
