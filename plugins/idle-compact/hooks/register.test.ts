@@ -84,3 +84,11 @@ test('does not retry a compaction that failed', async ($, on) => {
   await clock.advance(120 * MINUTE)
   expect(compacted.count).toBe(1)
 })
+
+test('does not compact once the background subagent has finished', async ($, on) => {
+  const { clock, compacted } = engine(on)
+  await turn($, [{ id: 'a1', type: 'subagent', status: 'running', description: 'review' }])
+
+  await clock.advance(120 * MINUTE)
+  expect(compacted.count).toBe(0)
+})

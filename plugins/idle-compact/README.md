@@ -26,5 +26,7 @@ Set it from `/config`, or in settings:
 
 ## Notes
 
-- Background tasks are counted from the `Stop` event at the end of each turn. A task that finishes, or is stopped, without starting a turn still counts until the next turn ends.
+- Background tasks are taken from the `Stop` event at the end of each turn, and checked again just before compacting:
+  - Background subagents are checked live (`$.agent.list()`); one no longer pending, running or waiting no longer counts.
+  - Shell commands and monitors have no live listing in the plugin API. Each sends a notification when it ends (stopped or killed too), which starts a turn, and that turn's `Stop` takes the count again.
 - An interrupted turn counts no background tasks, so nothing is compacted until a turn ends normally.
