@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-mods",
+  "owner": {
+    "name": "Michael McKnight"
+  },
+  "metadata": {
+    "description": "A collection of Claude Code plugins by ShadowDog007",
+    "version": "0.1.0",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": []
+}
