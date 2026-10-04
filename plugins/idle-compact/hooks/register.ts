@@ -1,12 +1,10 @@
 import { atom, read, update } from 'claude-code';
-import type { EngineInterface, Register } from 'claude-code';
+import type { EngineInterface, Register, Timer } from 'claude-code';
 
 import type { IdleCompactTracker } from '../types';
 
 const DEFAULT_IDLE_MINUTES = 55;
 const DEFAULT_MIN_CONTEXT_TOKENS = 100_000;
-// How late a compaction may land past the idle time.
-const POLL_MS = 5_000;
 // A subagent still doing work; `idle` is a teammate waiting on a message.
 const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting']);
 
@@ -27,6 +25,27 @@ function track($: EngineInterface, change: Partial<IdleCompactTracker>) {
   return update($, tracker, current => ({ ...current, ...change }));
 }
 
+// The one pending compaction. A plain variable: a reload cancels the timer
+// along with the module, and `session.start` arms it again from the state.
+let timer: Timer | undefined;
+
+function disarm() {
+  timer?.cancel();
+  timer = undefined;
+}
+
+// Sets the timer for when the session will have sat idle for the idle time,
+// if it is waiting on background work and has not compacted since its last
+// model request.
+async function arm($: EngineInterface, limits: Limits) {
+  disarm();
+  const session = await read($, tracker);
+  if (session.hasCompacted) return;
+  if (session.backgroundTasks.length < 1 || session.lastModelCallAt === null) return;
+  const remainingMs = session.lastModelCallAt + limits.idleMs - (await $.clock.now());
+  timer = $.clock.after(Math.max(remainingMs, 0), () => compactIfIdle($, limits));
+}
+
 // The tasks from the last turn's snapshot still running now. Subagents are
 // checked live; shell and monitor tasks have no live listing, but each sends
 // a notification when it ends (killed too), whose turn retakes the snapshot.
@@ -39,11 +58,16 @@ async function runningTasks($: EngineInterface, tasks: IdleCompactTracker['backg
 }
 
 async function compactIfIdle($: EngineInterface, limits: Limits) {
+  timer = undefined;
   const session = await read($, tracker);
   if (session.hasCompacted) return;
   if (session.backgroundTasks.length < 1 || session.lastModelCallAt === null) return;
   if ((session.contextTokens ?? 0) < limits.minContextTokens) return;
-  if ((await $.clock.now()) - session.lastModelCallAt < limits.idleMs) return;
+  // Not yet, should the timer have fired early: wait out the rest.
+  if ((await $.clock.now()) - session.lastModelCallAt < limits.idleMs) {
+    await arm($, limits);
+    return;
+  }
 
   const backgroundTasks = await runningTasks($, session.backgroundTasks);
   if (backgroundTasks.length < 1) {
@@ -51,8 +75,8 @@ async function compactIfIdle($: EngineInterface, limits: Limits) {
     return;
   }
 
-  // Counted whether it lands or not, so a failure is not retried every poll;
-  // a turn started meanwhile makes a model call, which re-arms it anyway.
+  // Counted whether it lands or not, so a failure is not retried; the next
+  // model request re-arms it.
   await track($, { hasCompacted: true });
   try {
     const result = await $.session.compact();
@@ -74,15 +98,18 @@ export const register: Register = (on, options) => {
     minContextTokens: positive(options.minContextTokens, DEFAULT_MIN_CONTEXT_TOKENS),
   };
 
-  // Fires again on every reload, which restarts the poll.
-  on('session.start', ($, e, next) => {
-    $.clock.every(POLL_MS, () => compactIfIdle($, limits));
+  // Fires again on every reload, which arms the timer from the session state.
+  on('session.start', async ($, e, next) => {
+    await arm($, limits);
     return next(e);
   });
 
   // A /clear starts the conversation over.
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') await track($, IDLE);
+    if (e.reason === 'clear') {
+      disarm();
+      await track($, IDLE);
+    }
     return next(e);
   });
 
@@ -94,6 +121,7 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     // Retaken when the turn stops, so none count while it runs; an
     // interrupted turn has no Stop and leaves none counted.
+    disarm();
     await track($, { backgroundTasks: [] });
     return next(e);
   });
@@ -109,6 +137,7 @@ export const register: Register = (on, options) => {
     if (e.agent_id === undefined) {
       const backgroundTasks = (e.background_tasks ?? []).map(({ id, type }) => ({ id, type }));
       await track($, { backgroundTasks });
+      await arm($, limits);
     }
     return next(e);
   });
