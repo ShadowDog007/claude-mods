@@ -1,0 +1,21 @@
+{
+  "name": "idle-compact",
+  "version": "0.1.0",
+  "description": "Runs /compact while the session sits idle waiting on background work, right before the prompt cache expires.",
+  "author": { "name": "Michael McKnight" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "idleMinutes": {
+      "type": "number",
+      "title": "Idle minutes before compacting",
+      "description": "Minutes since the last model request before an idle session with background work running is compacted. Keep it under the prompt cache's one-hour lifetime.",
+      "default": 59
+    },
+    "minContextTokens": {
+      "type": "number",
+      "title": "Minimum context tokens",
+      "description": "Only compact when the context holds at least this many tokens.",
+      "default": 100000
+    }
+  }
+}

@@ -9,3 +9,9 @@ A [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-market
 ```
 
 Then browse and install plugins with `/plugin`.
+
+## Plugins
+
+| Plugin | Description |
+| --- | --- |
+| [idle-compact](plugins/idle-compact) | Runs `/compact` while the session sits idle waiting on background work, right before the prompt cache expires. |
