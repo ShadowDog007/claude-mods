@@ -24,6 +24,10 @@ function engine(
 ) {
   const clock = mock.clock(on, { now: 0 });
   const compacted = { count: 0 };
+  const status: { text: string | undefined } = { text: undefined };
+  on('ui.status', (_$, e) => {
+    status.text = e.text;
+  });
   const state = { value: tracker, version: 1 };
   on('state.get', () => ({ value: { value: state.value, version: state.version } }));
   on('state.set', (_$, e) => {
@@ -47,7 +51,7 @@ function engine(
     if (isFailing) throw new Error('provider down');
     return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] };
   });
-  return { clock, compacted, state };
+  return { clock, compacted, state, status };
 }
 
 // One finished turn: a model request over `tokens` of context, leaving
@@ -168,4 +172,30 @@ test('forgets what it tracked on /clear', async ($, on) => {
   await clock.advance(120 * MINUTE);
   expect(compacted.count).toBe(0);
   expect(state.value?.lastModelCallAt).toBe(null);
+});
+
+test('pins when it will compact while idle, and clears it when a turn starts', async ($, on) => {
+  const { status } = engine(on);
+  await turn($, [SHELL]);
+  expect(status.text).toMatch(/^idle-compact scheduled for \d\d:\d\d$/);
+
+  await $.turn.start({ text: 'next', turnId: 't2' });
+  expect(status.text).toBe(undefined);
+});
+
+test('clears the schedule once it compacts', async ($, on) => {
+  const { clock, status } = engine(on);
+  await turn($, [SHELL]);
+
+  await clock.advance(59 * MINUTE);
+  expect(status.text).toBe(undefined);
+});
+
+test('pins nothing when it would not compact', async ($, on) => {
+  const { status } = engine(on);
+  await turn($, [SHELL], 99_999);
+  expect(status.text).toBe(undefined);
+
+  await turn($, []);
+  expect(status.text).toBe(undefined);
 });

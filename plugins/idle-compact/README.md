@@ -13,6 +13,8 @@ It compacts at most once per idle stretch; the next model request re-arms it. Wh
 
 The idle time counts from when a request is sent, because that is when the prompt cache's lifetime is refreshed. Compacting just before the one-hour lifetime runs out means the compaction request still reads the conversation from cache, and the session wakes to a smaller context when the background work reports back. The default leaves a minute for the compaction request to be sent; keep `idleMinutes` under 60. This only helps where the session uses the one-hour cache; under the five-minute cache, the cache has expired long before any useful idle time.
 
+While a compaction is scheduled and the context is big enough for it, the plugin pins `idle-compact scheduled for HH:MM` (local time) as its own status line under the prompt. The line clears when a turn starts, when it compacts, or when there's nothing left to compact for. When it compacts, it also shows a toast.
+
 ## Configuration
 
 | Option | Type | Default | Description |
