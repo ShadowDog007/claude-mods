@@ -33,3 +33,4 @@ Set them from `/config`, or in settings:
   - Shell commands and monitors have no live listing in the plugin API. Each sends a notification when it ends (stopped or killed too), which starts a turn, and that turn's `Stop` takes the count again.
 - An interrupted turn counts no background tasks, so nothing is compacted until a turn ends normally.
 - The context size is the input of the last model response, as the status line reports it.
+- What it tracks is kept in the session's plugin state, so a reload of the plugin (such as changing an option in `/config`) carries on where it was. `/clear` resets it.

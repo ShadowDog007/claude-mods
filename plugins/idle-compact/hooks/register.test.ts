@@ -2,17 +2,42 @@ import type { On } from 'claude-code';
 import type { Engine } from 'claude-code/testing';
 import { expect, mock, test } from 'claude-code/testing';
 
+import type { IdleCompactTracker } from '../types';
+
 const MINUTE = 60_000;
 const SHELL = { id: 'b1', type: 'shell', status: 'running', description: 'npm run dev' };
+const IDLE: IdleCompactTracker = {
+  isTurnRunning: false,
+  lastModelCallAt: null,
+  contextTokens: null,
+  backgroundTasks: [],
+  hasCompacted: false,
+};
 
 // Stands in for the engine beneath the plugin: a session, a model request
-// that answers at once, and a compaction that counts its calls (and fails
-// when `isFailing`).
-function engine(on: On, isFailing = false) {
+// that answers at once, a compaction that counts its calls (and fails when
+// `isFailing`), and the session state, holding `tracker` as a reload finds
+// what the module before it wrote. It starts from the idle tracker, which the
+// plugin reads the same as nothing written.
+function engine(
+  on: On,
+  { isFailing = false, tracker = IDLE }: { isFailing?: boolean; tracker?: IdleCompactTracker } = {},
+) {
   const clock = mock.clock(on, { now: 0 });
   const compacted = { count: 0 };
+  const state = { value: tracker, version: 1 };
+  on('state.get', () => ({ value: { value: state.value, version: state.version } }));
+  on('state.set', (_$, e) => {
+    if (e.ifVersion !== undefined && e.ifVersion !== state.version) {
+      return { value: { isSet: false, version: state.version } };
+    }
+    state.value = e.value as IdleCompactTracker;
+    state.version++;
+    return { value: { isSet: true, version: state.version } };
+  });
   on('session.start', (_$, e) => ({ cwd: e.cwd }));
   on('session.measure', (_$, e) => ({ changed: e.changed }));
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }));
   on('turn.start', (_$, e) => ({ turnId: e.turnId }));
   on('turn.complete', (_$, e) => ({ text: e.answer }));
   on('classic.Stop', () => ({}));
@@ -24,7 +49,7 @@ function engine(on: On, isFailing = false) {
     if (isFailing) throw new Error('provider down');
     return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] };
   });
-  return { clock, compacted };
+  return { clock, compacted, state };
 }
 
 // One finished turn: a model request over `tokens` of context, leaving
@@ -94,7 +119,7 @@ test(
 );
 
 test('does not retry a compaction that failed', async ($, on) => {
-  const { clock, compacted } = engine(on, true);
+  const { clock, compacted } = engine(on, { isFailing: true });
   await turn($, [SHELL]);
 
   await clock.advance(120 * MINUTE);
@@ -107,4 +132,45 @@ test('does not compact once the background subagent has finished', async ($, on)
 
   await clock.advance(120 * MINUTE);
   expect(compacted.count).toBe(0);
+});
+
+test('keeps what it tracks in the session state', async ($, on) => {
+  const { clock, state } = engine(on);
+  await clock.advance(MINUTE);
+  await turn($, [SHELL]);
+
+  expect(state.value).toEqual({
+    isTurnRunning: false,
+    lastModelCallAt: MINUTE,
+    contextTokens: 150_000,
+    backgroundTasks: [{ id: 'b1', type: 'shell' }],
+    hasCompacted: false,
+  });
+});
+
+test('carries on after a reload from what the session state holds', async ($, on) => {
+  const { clock, compacted } = engine(on, {
+    tracker: {
+      isTurnRunning: false,
+      lastModelCallAt: 0,
+      contextTokens: 150_000,
+      backgroundTasks: [{ id: 'b1', type: 'shell' }],
+      hasCompacted: false,
+    },
+  });
+  // A reload: the module starts afresh, and no turn runs.
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
+
+  await clock.advance(55 * MINUTE + 5_000);
+  expect(compacted.count).toBe(1);
+});
+
+test('forgets what it tracked on /clear', async ($, on) => {
+  const { clock, compacted, state } = engine(on);
+  await turn($, [SHELL]);
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
+
+  await clock.advance(120 * MINUTE);
+  expect(compacted.count).toBe(0);
+  expect(state.value?.lastModelCallAt).toBe(null);
 });
