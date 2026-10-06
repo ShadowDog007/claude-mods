@@ -106,9 +106,9 @@ function engine(on: On) {
     return { result: {}, text: 'x'.repeat(size) };
   });
   // Every pane is placed; `opened` lists their ids.
-  const opened: string[] = [];
+  const opened: { id: string; columns?: number }[] = [];
   on('ui.open', (_$, e) => {
-    opened.push(e.id);
+    opened.push({ id: e.id, columns: e.columns });
     return { value: { isPlaced: true as const } };
   });
   const contexts: number[] = [];
@@ -364,8 +364,13 @@ test('shows the largest tool results in a pane on /context-tools, forgetting the
   await $.tool.call({ tool: 'Read', file_path: 'agent-90000.ts', agentId: 'a1' } as never);
 
   // The command opens the pane and leaves the model nothing to read.
-  const ran = await $.command.run({ command: 'context-tools', args: '', origin: { kind: 'composer' } } as never);
-  expect(opened).toEqual(['context-tools']);
+  const ran = await $.command.run({
+    command: 'context-tools',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 160 },
+  } as never);
+  expect(opened).toEqual([{ id: 'context-tools', columns: 160 }]);
   expect((ran as { text?: string }).text).toBe(undefined);
 
   const pane = {

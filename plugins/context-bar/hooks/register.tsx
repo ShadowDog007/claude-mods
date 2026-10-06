@@ -322,10 +322,17 @@ export const register: Register = on => {
   });
 
   // Opens the list in a pane, for the person alone: no text, so nothing of it
-  // reaches the model.
-  on('command.run', { command: TOOLS_PANE }, async $ => {
+  // reaches the model. A one-off look, so docked it asks for the whole width.
+  on('command.run', { command: TOOLS_PANE }, async ($, e) => {
     const rows = Math.max((await read($, toolResults)).length, 1) + 2;
-    await $.ui.open({ id: TOOLS_PANE, title: 'Largest tool results', focus: true, closeOnEscape: true, rows });
+    await $.ui.open({
+      id: TOOLS_PANE,
+      title: 'Largest tool results',
+      focus: true,
+      closeOnEscape: true,
+      rows,
+      columns: e.presentation.columns,
+    });
     return {};
   });
 

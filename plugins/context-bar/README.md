@@ -17,7 +17,7 @@ The band yields to a survey, and can be collapsed and restored like any band abo
 
 ## `/context-tools`
 
-Opens a pane listing the twenty largest tool results still in the context, each with its estimated tokens, the tool, and what it was called on. A long path or command is cut in the middle, so the file name stays in view:
+Opens a pane, as wide as the terminal allows, listing the twenty largest tool results still in the context, each with its estimated tokens, the tool, and what it was called on. A long path or command is cut in the middle, so the file name stays in view:
 
 ```
 Largest tool results in the context (estimated at 4 characters a token)
