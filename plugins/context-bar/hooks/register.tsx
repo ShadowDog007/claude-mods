@@ -3,15 +3,15 @@ import type { EngineInterface, ModelUsage, Register } from 'claude-code';
 
 import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarToolResult, ContextBarTurn } from '../types';
 
-const COMMAND = 'context-tools';
-// The tool results kept, and how many the command lists unless told.
+// The command, and the pane it opens, listing the largest tool results.
+const TOOLS_PANE = 'context-tools';
 const MAX_TOOL_RESULTS = 20;
-const TOOL_RESULTS_LISTED = 10;
 // A tool result's tokens, estimated from its text's length.
 const CHARS_PER_TOKEN = 4;
 // The arguments that say what a tool was called on, the first one present.
 const TARGET_KEYS = ['file_path', 'notebook_path', 'path', 'command', 'pattern', 'url', 'query', 'skill', 'description'];
-const MAX_TARGET_LENGTH = 80;
+// The most of a target kept; the pane fits it to its width.
+const MAX_TARGET_LENGTH = 400;
 
 // The steps the turn line lists, newest last.
 const MAX_STEPS_SHOWN = 8;
@@ -134,19 +134,25 @@ export function keepLargest(list: readonly ContextBarToolResult[], result: Conte
   return next.slice(0, MAX_TOOL_RESULTS);
 }
 
-// The command's answer: the `count` largest tool results, one a line.
-export function toolResultsReport(list: readonly ContextBarToolResult[], count: number) {
-  if (list.length < 1) return 'No tool results in the context yet.';
-  const shown = list.slice(0, count);
-  const sizes = shown.map(each => `~${formatTokens(each.tokens)}`);
+// `text` in `width` cells, its middle cut where it is wider, so a path keeps
+// both its root and its file name.
+export function fitMiddle(text: string, width: number) {
+  if (text.length <= width) return text;
+  if (width < 2) return '…'.slice(0, width);
+  const head = Math.ceil((width - 1) / 2);
+  return `${text.slice(0, head)}…${text.slice(text.length - (width - 1 - head))}`;
+}
+
+// The pane's rows, one a tool result in `columns` cells: its size, the tool,
+// and what it was called on.
+export function toolResultLines(list: readonly ContextBarToolResult[], columns: number) {
+  const sizes = list.map(each => `~${formatTokens(each.tokens)}`);
   const sizeWidth = Math.max(...sizes.map(size => size.length));
-  const toolWidth = Math.max(...shown.map(each => each.tool.length));
-  return [
-    `Largest tool results in the context (estimated at ${CHARS_PER_TOKEN} characters a token):`,
-    ...shown.map((each, index) =>
-      `  ${sizes[index]!.padStart(sizeWidth)}  ${each.tool.padEnd(toolWidth)}  ${each.target}`.trimEnd(),
-    ),
-  ].join('\n');
+  const toolWidth = Math.max(...list.map(each => each.tool.length));
+  return list.map((each, index) => {
+    const prefix = `${sizes[index]!.padStart(sizeWidth)}  ${each.tool.padEnd(toolWidth)}  `;
+    return `${prefix}${fitMiddle(each.target, columns - prefix.length)}`.trimEnd();
+  });
 }
 
 type Segment = { name: string; tokens: number; color: string; kind: ContextBarSlice['kind'] | 'turn' };
@@ -271,9 +277,8 @@ export function legend(parts: Segment[], columns: number): LegendItem[] {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: COMMAND,
-      description: 'List the largest tool results in the context',
-      argumentHint: '[count]',
+      name: TOOLS_PANE,
+      description: 'Show the largest tool results in the context',
       immediate: true,
     });
     const result = await next(e);
@@ -316,10 +321,33 @@ export const register: Register = on => {
     return ran;
   });
 
-  on('command.run', { command: COMMAND }, async ($, e) => {
-    const count = Number.parseInt(e.args.trim(), 10);
+  // Opens the list in a pane, for the person alone: no text, so nothing of it
+  // reaches the model.
+  on('command.run', { command: TOOLS_PANE }, async $ => {
+    const rows = Math.max((await read($, toolResults)).length, 1) + 2;
+    await $.ui.open({ id: TOOLS_PANE, title: 'Largest tool results', focus: true, closeOnEscape: true, rows });
+    return {};
+  });
+
+  on('ui.render', { component: 'Pane', requestId: TOOLS_PANE }, async ($, e) => {
     const list = await read($, toolResults);
-    return { text: toolResultsReport(list, Number.isInteger(count) && count > 0 ? count : TOOL_RESULTS_LISTED) };
+    const { Box, Button, Text } = $.ui.resolve(e);
+    return (
+      <Box flexDirection="column">
+        <Text bold>
+          Largest tool results in the context{' '}
+          <Text dimColor>(estimated at {CHARS_PER_TOKEN} characters a token)</Text>
+        </Text>
+        {list.length < 1 ? (
+          <Text dimColor>No tool results in the context yet.</Text>
+        ) : (
+          toolResultLines(list, e.props.bodyColumns).map(line => <Text wrap="truncate-end">{line}</Text>)
+        )}
+        <Button key="close" role="dismiss" hotkey="q" onPress={() => void $.ui.close({ id: TOOLS_PANE })}>
+          Close
+        </Button>
+      </Box>
+    );
   });
 
   on('session.measure', async ($, e, next) => {

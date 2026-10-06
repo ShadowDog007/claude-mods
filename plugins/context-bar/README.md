@@ -15,17 +15,18 @@ Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · steps +1.0k +6.0
 
 The band yields to a survey, and can be collapsed and restored like any band above the prompt (`ctrl+x ctrl+a`, or the `[-]`/`[+]` at its right edge).
 
-## `/context-tools [count]`
+## `/context-tools`
 
-Lists the largest tool results still in the context, ten by default, each with its estimated tokens, the tool, and what it was called on:
+Opens a pane listing the twenty largest tool results still in the context, each with its estimated tokens, the tool, and what it was called on. A long path or command is cut in the middle, so the file name stays in view:
 
 ```
-Largest tool results in the context (estimated at 4 characters a token):
-   ~12k  Bash  npm test
-  ~5.0k  Read  src/engine.ts
+Largest tool results in the context (estimated at 4 characters a token)
+ ~12k  Bash  npm test
+~5.0k  Read  C:\Users\me\projects\app…\src\engine.ts
+[ Close ]
 ```
 
-Only the main conversation's results are counted (a subagent's stay in its own context). The list clears at a compaction and at `/clear`. Sizes are estimated from each result's text at about four characters a token, so images are not counted.
+The pane is for you alone: nothing of it reaches the model. Escape, `q` or Close dismisses it. Only the main conversation's results are counted (a subagent's stay in its own context). The list clears at a compaction and at `/clear`. Sizes are estimated from each result's text at about four characters a token, so images are not counted.
 
 ## Notes
 
