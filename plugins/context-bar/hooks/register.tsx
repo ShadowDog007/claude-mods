@@ -7,13 +7,12 @@ import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTu
 const MAX_STEPS_SHOWN = 8;
 // The bar's narrowest, in cells; otherwise it fills the band beside its summary.
 const MIN_BAR_CELLS = 10;
-// What the newest part of the conversation is drawn in: the first of these no
-// other segment draws in.
+// What the last turn is drawn in: the first of these no other segment uses.
 const LAST_TURN_COLORS = ['warning', 'suggestion', 'success', 'permission'];
 
 // The short names for /context's rows, by the start of the row's name, in the
-// order the bar draws them; a row named otherwise goes by its first word, just
-// before the conversation, which stays last for the last turn to end it.
+// order the bar draws them. A row named otherwise goes by its first word, just
+// before the messages, which stay last so the last turn can be carved off them.
 const SHORT_NAMES: [prefix: string, name: string][] = [
   ['System', 'System'],
   ['MCP', 'MCP'],
@@ -22,11 +21,6 @@ const SHORT_NAMES: [prefix: string, name: string][] = [
   ['Memory', 'Memory'],
   ['Messages', 'Messages'],
 ];
-
-function rank(slice: ContextBarSlice) {
-  const index = SHORT_NAMES.findIndex(([prefix]) => slice.name.startsWith(prefix));
-  return index < 0 ? SHORT_NAMES.length - 1.5 : index;
-}
 
 // Kept in the session's state, so a reload of the module draws at once rather
 // than waiting for the next response.
@@ -38,8 +32,7 @@ const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
 // request, so it is cheap enough to run after every response.
 async function refresh($: EngineInterface) {
   try {
-    const usage = await $.session.usage({ breakdown: 'summary' });
-    const rows = usage.context.breakdown;
+    const rows = (await $.session.usage({ breakdown: 'summary' })).context.breakdown;
     if (rows === undefined) return;
     const slices: ContextBarSlice[] = [];
     for (const { name, tokens, color, kind } of rows.categories) {
@@ -51,34 +44,22 @@ async function refresh($: EngineInterface) {
   }
 }
 
-// A turn kept by an earlier version has no compactedAt.
-async function readTurn($: EngineInterface): Promise<ContextBarTurn | null> {
-  const current = await read($, turn);
-  return current === null ? null : { ...current, compactedAt: current.compactedAt ?? null };
-}
-
 function inputSide(usage: ModelUsage) {
   return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
 }
 
-// The context the turn's growth counts from: where it started, or where a
-// compaction within it left the context.
-function baseline(current: ContextBarTurn) {
-  return current.compactedAt === null ? current.contextBefore : current.steps[current.compactedAt]!.context;
-}
-
-// What the turn has added to the context so far: from its baseline to its
-// latest request, that request's own output included, since the next one
-// carries it.
+// What the turn has added to the context so far, from where it started (or
+// where a compaction within it left the context) to its latest request, that
+// request's own output included, since the next one carries it.
 export function turnGrowth(current: ContextBarTurn) {
   const last = current.steps.at(-1);
-  const start = baseline(current);
+  const start = current.compactedAt === null ? current.contextBefore : current.steps[current.compactedAt]!.context;
   if (last === undefined || start === null) return null;
   return last.context + last.output - start;
 }
 
 // What each step added over the one before it (the first over the turn's
-// start); 'compacted' for the step a compaction shrank, null where there is
+// start): 'compacted' for the step a compaction shrank, null where there is
 // nothing to compare against.
 export function stepGrowth(current: ContextBarTurn) {
   return current.steps.map((step, index) => {
@@ -100,24 +81,57 @@ function signed(tokens: number) {
   return `${tokens < 0 ? '-' : '+'}${formatTokens(Math.abs(tokens))}`;
 }
 
+// The line under the legend: the turn's requests, the context it went from
+// and to, what it generated, and what each of its last steps added.
+export function turnLine(current: ContextBarTurn) {
+  const last = current.steps.at(-1);
+  if (last === undefined) return null;
+  const growth = turnGrowth(current);
+  const context = [
+    current.contextBefore === null ? null : formatTokens(current.contextBefore),
+    current.compactedAt === null ? null : `compacted ${formatTokens(current.steps[current.compactedAt]!.context)}`,
+    formatTokens(last.context),
+  ].filter(point => point !== null);
+  const steps = stepGrowth(current);
+  const shown = steps
+    .slice(-MAX_STEPS_SHOWN)
+    .map(delta => (delta === null ? '?' : delta === 'compacted' ? delta : signed(delta)));
+  const count = current.steps.length;
+  return [
+    `${current.isRunning ? 'This turn' : 'Last turn'}: ${count} step${count === 1 ? '' : 's'}`,
+    `context ${context.join(' → ')}${growth === null ? '' : ` (${signed(growth)})`}`,
+    `${formatTokens(current.steps.reduce((sum, step) => sum + step.output, 0))} out`,
+    shown.length < 2 ? null : `steps ${steps.length > shown.length ? '… ' : ''}${shown.join(' ')}`,
+  ]
+    .filter(part => part !== null)
+    .join(' · ');
+}
+
 type Segment = { name: string; tokens: number; color: string; kind: ContextBarSlice['kind'] | 'turn' };
 
 function isContent(segment: Segment) {
   return segment.kind === 'used' || segment.kind === 'turn';
 }
 
+// How a segment's cells and its legend label are drawn: the free space dimmed.
+function style(segment: Segment) {
+  return segment.kind === 'free' ? { color: undefined, isDim: true } : { color: segment.color, isDim: false };
+}
+
+function knownIndex(slice: ContextBarSlice) {
+  return SHORT_NAMES.findIndex(([prefix]) => slice.name.startsWith(prefix));
+}
+
 export function shortName(slice: ContextBarSlice) {
   if (slice.kind === 'free') return 'Free';
   if (slice.kind === 'buffer') return 'Buffer';
-  const known = SHORT_NAMES.find(([prefix]) => slice.name.startsWith(prefix));
-  return known?.[1] ?? slice.name.split(' ')[0] ?? slice.name;
+  return SHORT_NAMES[knownIndex(slice)]?.[1] ?? slice.name.split(' ')[0] ?? slice.name;
 }
 
 // The bar's segments in order, each by its short name, neighbours of one name
 // (the system prompt and the system tools) drawn as one in the first one's
-// colour: the content in SHORT_NAMES' order, with the last turn's growth
-// carved off the end of the last of it (the conversation, which a turn
-// appends to), then the free space and the buffer.
+// colour: the content in SHORT_NAMES' order with the last turn's growth carved
+// off its end, then the free space and the buffer.
 export function segments(rows: ContextBarBreakdown, growth: number | null): Segment[] {
   const result: Segment[] = [];
   const add = (slice: ContextBarSlice) => {
@@ -125,6 +139,10 @@ export function segments(rows: ContextBarBreakdown, growth: number | null): Segm
     const previous = result.at(-1);
     if (previous?.name === name) previous.tokens += slice.tokens;
     else result.push({ ...slice, name });
+  };
+  const rank = (slice: ContextBarSlice) => {
+    const index = knownIndex(slice);
+    return index < 0 ? SHORT_NAMES.length - 1.5 : index;
   };
   rows.slices
     .filter(slice => slice.kind === 'used')
@@ -147,9 +165,9 @@ export function segments(rows: ContextBarBreakdown, growth: number | null): Segm
 }
 
 // Splits `cells` among the weights in proportion, by largest remainder, then
-// gives a cell to each used segment that rounded to none, taken from the
+// gives a cell to each required weight that rounded to none, taken from the
 // largest, so every kind of content in the window shows.
-export function allocate(weights: number[], cells: number, isRequired: boolean[] = []) {
+export function allocate(weights: number[], cells: number, isRequired: boolean[]) {
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   if (total <= 0 || cells <= 0) return weights.map(() => 0);
   const exact = weights.map(weight => (weight / total) * cells);
@@ -185,35 +203,24 @@ export type Run = { text: string; color: string | undefined; isDim: boolean };
 // The bar as runs of text, one per segment drawn: its cells in its glyph.
 export function bar(parts: Segment[], counts: number[]): Run[] {
   return parts
-    .map((part, index) => ({
-      text: GLYPH[part.kind].repeat(counts[index]!),
-      color: part.kind === 'free' ? undefined : part.color,
-      isDim: part.kind === 'free',
-    }))
+    .map((part, index) => ({ text: GLYPH[part.kind].repeat(counts[index]!), ...style(part) }))
     .filter(run => run.text.length > 0);
 }
 
 type LegendItem = { segment: Segment; label: string };
 
-// Labels with two spaces between them.
-function legendWidth(items: LegendItem[]) {
-  return items.reduce((sum, item) => sum + item.label.length + 2, 0) - 2;
-}
-
-// The legend that fits on one line of `columns`, each label drawn in its
-// segment's colour: every segment with its tokens; then by name alone; then
-// as many of those as fit.
+// The legend that fits on one line of `columns`, labels two spaces apart: every
+// segment with its tokens; then by name alone; then as many names as fit.
 export function legend(parts: Segment[], columns: number): LegendItem[] {
-  const tiers: LegendItem[][] = [
-    parts.map(segment => ({ segment, label: `${segment.name} ${formatTokens(segment.tokens)}` })),
-    parts.map(segment => ({ segment, label: segment.name })),
-  ];
-  for (const tier of tiers) {
-    if (legendWidth(tier) <= columns) return tier;
-  }
+  const width = (items: LegendItem[]) => items.reduce((sum, item) => sum + item.label.length + 2, -2);
+  const full = parts.map(segment => ({ segment, label: `${segment.name} ${formatTokens(segment.tokens)}` }));
+  if (width(full) <= columns) return full;
+  const names = parts.map(segment => ({ segment, label: segment.name }));
+  let used = -2;
   const fitting: LegendItem[] = [];
-  for (const item of tiers.at(-1)!) {
-    if (legendWidth([...fitting, item]) > columns) break;
+  for (const item of names) {
+    used += item.label.length + 2;
+    if (used > columns) break;
     fitting.push(item);
   }
   return fitting;
@@ -238,8 +245,7 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('context')) {
-      const tokens = e.context.tokens ?? null;
-      await update($, measured, () => tokens);
+      await update($, measured, () => e.context.tokens ?? null);
       await refresh($);
     }
     return next(e);
@@ -255,13 +261,13 @@ export const register: Register = on => {
     const result = yield* next(e);
     if (e.agentId === undefined && result.usage !== null) {
       const step: ContextBarStep = { context: inputSide(result.usage), output: result.usage.output_tokens };
-      const current = await readTurn($);
-      if (current !== null) {
+      await update($, turn, current => {
+        if (current === null) return current;
         // The context only shrinks when a compaction runs mid-turn.
         const previous = current.steps.at(-1)?.context ?? current.contextBefore;
         const compactedAt = previous !== null && step.context < previous ? current.steps.length : current.compactedAt;
-        await update($, turn, () => ({ ...current, steps: [...current.steps, step], compactedAt }));
-      }
+        return { ...current, steps: [...current.steps, step], compactedAt };
+      });
     }
     return result;
   });
@@ -276,53 +282,26 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rows = await read($, breakdown);
     if (e.props.hasSurvey || rows === null || rows.slices.length < 1) return next(e);
-    const current = await readTurn($);
-    const growth = current === null ? null : turnGrowth(current);
+    const current = await read($, turn);
     const { Box, Text } = $.ui.resolve(e);
 
     const used = rows.slices.filter(slice => slice.kind === 'used').reduce((sum, slice) => sum + slice.tokens, 0);
     const percent = Math.round((used / Math.max(rows.window, 1)) * 100);
     const summary = `${formatTokens(used)}/${formatTokens(rows.window)} (${percent}%)`;
 
-    const parts = segments(rows, growth);
+    const parts = segments(rows, current === null ? null : turnGrowth(current));
     const counts = allocate(
       parts.map(part => part.tokens),
       barWidth(e.props.bodyColumns, summary.length),
       parts.map(isContent),
     );
-    const runs = bar(parts, counts);
-
-    const steps = current === null ? [] : stepGrowth(current);
-    const shown = steps.slice(-MAX_STEPS_SHOWN);
-    const turnLine =
-      current === null || current.steps.length < 1
-        ? null
-        : [
-            `${current.isRunning ? 'This turn' : 'Last turn'}: ${current.steps.length} step${current.steps.length === 1 ? '' : 's'}`,
-            current.contextBefore === null && current.compactedAt === null
-              ? `context ${formatTokens(current.steps.at(-1)!.context)}`
-              : 'context ' +
-                [
-                  current.contextBefore === null ? null : formatTokens(current.contextBefore),
-                  current.compactedAt === null ? null : `compacted ${formatTokens(baseline(current)!)}`,
-                  formatTokens(current.steps.at(-1)!.context),
-                ]
-                  .filter(part => part !== null)
-                  .join(' → ') +
-                (growth === null ? '' : ` (${signed(growth)})`),
-            `${formatTokens(current.steps.reduce((sum, step) => sum + step.output, 0))} out`,
-            shown.length < 2
-              ? null
-              : `steps ${steps.length > shown.length ? '… ' : ''}${shown.map(delta => (delta === null ? '?' : delta === 'compacted' ? delta : signed(delta))).join(' ')}`,
-          ]
-            .filter(part => part !== null)
-            .join(' · ');
+    const line = current === null ? null : turnLine(current);
 
     return (
       <Box flexDirection="column">
         <Box flexDirection="row">
           <Box key="bar" flexDirection="row">
-            {runs.map(run => (
+            {bar(parts, counts).map(run => (
               <Text color={run.color} dimColor={run.isDim}>
                 {run.text}
               </Text>
@@ -331,16 +310,19 @@ export const register: Register = on => {
           <Text bold> {summary}</Text>
         </Box>
         <Box key="legend" flexDirection="row">
-          {legend(parts, e.props.bodyColumns).map(({ segment, label }, index) => (
-            <Text color={segment.kind === 'free' ? undefined : segment.color} dimColor={segment.kind === 'free'}>
-              {index === 0 ? '' : '  '}
-              {label}
-            </Text>
-          ))}
+          {legend(parts, e.props.bodyColumns).map(({ segment, label }, index) => {
+            const { color, isDim } = style(segment);
+            return (
+              <Text color={color} dimColor={isDim}>
+                {index === 0 ? '' : '  '}
+                {label}
+              </Text>
+            );
+          })}
         </Box>
-        {turnLine === null ? null : (
+        {line === null ? null : (
           <Text dimColor wrap="truncate-end">
-            {turnLine}
+            {line}
           </Text>
         )}
       </Box>

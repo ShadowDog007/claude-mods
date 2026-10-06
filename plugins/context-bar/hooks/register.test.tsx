@@ -2,7 +2,7 @@ import type { ContextCategory, On } from 'claude-code';
 import type { Engine } from 'claude-code/testing';
 import { expect, test } from 'claude-code/testing';
 
-import { allocate, bar, barWidth, formatTokens, legend, segments, stepGrowth, turnGrowth } from './register';
+import { allocate, bar, barWidth, formatTokens, legend, segments, stepGrowth, turnGrowth, turnLine } from './register';
 
 const WINDOW = 200_000;
 const SURFACES = ['terminal', 'desktop'] as const;
@@ -21,6 +21,17 @@ const CATEGORIES = [
   row('Free space', 107_000, 'promptBorder', 'free'),
   row('Autocompact buffer', 33_000, 'inactive', 'buffer'),
 ];
+
+// `CATEGORIES` as the plugin keeps them: the deferred rows left out.
+const ROWS = {
+  window: WINDOW,
+  slices: CATEGORIES.filter(c => c.kind !== 'deferred').map(({ name, tokens, color, kind }) => ({
+    name,
+    tokens,
+    color,
+    kind: kind as 'used' | 'free' | 'buffer',
+  })),
+};
 
 // Stands in for the engine beneath the plugin: a session whose context breaks
 // down as `CATEGORIES`, and a model whose every request is answered over the
@@ -98,7 +109,7 @@ async function measure($: Engine, tokens: number) {
   await $.session.measure({ context: { tokens, window: WINDOW }, rateLimits: [], changed: ['context'] });
 }
 
-// A finished turn from 40k of context, over three requests.
+// A finished turn from 40k of context, a request answered over each of `steps`.
 async function turn($: Engine, contexts: number[], steps: number[]) {
   contexts.push(...steps);
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
@@ -128,16 +139,7 @@ function band(surface: (typeof SURFACES)[number], bodyColumns = 80) {
 }
 
 test('fills the bar to the band width, every category given a cell', () => {
-  const rows = {
-    window: WINDOW,
-    slices: CATEGORIES.filter(c => c.kind !== 'deferred').map(({ name, tokens, color, kind }) => ({
-      name,
-      tokens,
-      color,
-      kind: kind as 'used' | 'free' | 'buffer',
-    })),
-  };
-  const parts = segments(rows, 5_000);
+  const parts = segments(ROWS, 5_000);
   const counts = allocate(
     parts.map(p => p.tokens),
     40,
@@ -192,16 +194,7 @@ test('draws one segment for the system prompt and tools, skills before memory, f
 });
 
 test('keeps the legend to one line, dropping tokens and then names', () => {
-  const rows = {
-    window: WINDOW,
-    slices: CATEGORIES.filter(c => c.kind !== 'deferred').map(({ name, tokens, color, kind }) => ({
-      name,
-      tokens,
-      color,
-      kind: kind as 'used' | 'free' | 'buffer',
-    })),
-  };
-  const parts = segments(rows, 12_500);
+  const parts = segments(ROWS, 12_500);
   // Skills draws in the first colour the turn could; the turn takes the next.
   expect(parts.find(part => part.name === 'Turn')?.color).toBe('suggestion');
   expect(legend(parts, 80).map(item => item.label)).toEqual([
@@ -251,6 +244,7 @@ test('counts what a turn and each of its steps added', () => {
   expect(turnGrowth(current)).toBe(13_000);
   expect(stepGrowth(current)).toEqual([1_000, 6_000, 5_000]);
   expect(turnGrowth({ ...current, contextBefore: null })).toBe(null);
+  expect(turnLine({ ...current, contextBefore: null })).toBe('Last turn: 3 steps · context 52k · 1.5k out · steps ? +6.0k +5.0k');
 });
 
 test('formats token counts compactly', () => {
@@ -284,7 +278,7 @@ test('draws the bar, a legend by category, and the last turn', async ($, on) => 
       await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · steps +1.0k +6.0k +5.0k' }),
     ).toBeDefined();
 
-    // The 65 cells beside the summary, with no markers.
+    // The 65 cells beside the summary: content, free space, buffer.
     const drawn = (await ui.find({ key: 'bar' }))!.text;
     expect(drawn.length).toBe(65);
     expect(drawn).toMatch(/^█+░+▒+$/);
