@@ -138,11 +138,33 @@ export function formatSize(tokens: number) {
   return `~${Math.round(tokens / 1_000)}k`;
 }
 
-// The arguments of a call, one a line, as an expanded row lists them.
-export function argumentLines(input: Record<string, unknown>) {
+// The arguments of a call, a key and its value each, as an expanded row lists them.
+export function argumentRows(input: Record<string, unknown>): [key: string, value: string][] {
   return Object.entries(input)
     .filter(([, value]) => value !== undefined && value !== '')
-    .map(([key, value]) => `${key}: ${typeof value === 'string' ? oneLine(value) : JSON.stringify(value)}`);
+    .map(([key, value]) => [key, typeof value === 'string' ? oneLine(value) : JSON.stringify(value)]);
+}
+
+const GAP = 2;
+const MIN_DETAIL = 12;
+
+// The table's column widths in `columns` cells, gaps excluded: the call takes
+// what its titles need up to half the room the fixed columns leave, the detail
+// the rest, and is dropped when too narrow to read.
+export function tableColumns(columns: number, rows: { size: string; title: string; tool: string }[]) {
+  const rank = String(rows.length).length;
+  const size = Math.max(4, ...rows.map(row => row.size.length));
+  const tool = Math.max(4, ...rows.map(row => row.tool.length));
+  const room = columns - rank - size - BAR_CELLS - tool - 4 * GAP;
+  // A title follows its row's marker and a space.
+  const titles = Math.max(4, ...rows.map(row => row.title.length)) + 2;
+  let call = Math.min(titles, Math.max(Math.ceil(room / 2), 20));
+  let detail = room - call - GAP;
+  if (detail < MIN_DETAIL) {
+    call = Math.max(room, 4);
+    detail = 0;
+  }
+  return { rank, size, bar: BAR_CELLS, call, detail, tool };
 }
 
 // The first lines of a result, and how many more there are.
@@ -151,9 +173,6 @@ export function preview(text: string) {
   return { lines: lines.slice(0, PREVIEW_LINES), more: Math.max(lines.length - PREVIEW_LINES, 0) };
 }
 
-// Opens the list in a pane, for the person alone: the command answers no text,
-// so nothing of it reaches the model. Read from the context as it stands, so
-// it holds what a compaction left and nothing it dropped.
 // The messages' share of the window, as last estimated; null before one was.
 // Read while drawn, it draws the pane again after every response.
 async function messagesTokens($: EngineInterface) {
@@ -186,9 +205,15 @@ export function registerTools(on: On) {
     const all = Array.isArray(messages) ? toolResults(messages as Message[]) : [];
     const listed = all.slice(0, MAX_LISTED);
     const total = all.reduce((sum, each) => sum + each.tokens, 0);
-    const columns = e.props.bodyColumns;
-    const sizeWidth = Math.max(0, ...listed.map(each => formatSize(each.tokens).length));
-    const nameWidth = Math.max(0, ...listed.map(each => toolName(each.tool).length));
+    const rows = listed.map(each => ({
+      result: each,
+      size: formatSize(each.tokens),
+      tool: toolName(each.tool),
+      ...describe(each.tool, each.input, cwd),
+    }));
+    const widths = tableColumns(e.props.bodyColumns, rows);
+    // Where the call column starts, past its row's marker, as details indent to.
+    const indent = widths.rank + widths.size + widths.bar + 3 * GAP + 2;
     const close = () => void $.ui.close({ id: TOOLS_PANE });
     const toggle = async (id: string) => {
       await update($, expanded, current => (current === id ? null : id));
@@ -209,34 +234,78 @@ export function registerTools(on: On) {
             {header}
           </Text>
         </Box>
-        {listed.length < 1 ? <Text dimColor>No tool results in the context.</Text> : null}
-        {listed.map((each, index) => {
+        {listed.length < 1 ? (
+          <Text dimColor>No tool results in the context.</Text>
+        ) : (
+          <Box flexDirection="column" marginTop={1}>
+            <Box flexDirection="row">
+              <Box width={widths.rank + GAP}>
+                <Text dimColor bold>
+                  {'#'.padStart(widths.rank)}
+                </Text>
+              </Box>
+              <Box width={widths.size + GAP}>
+                <Text dimColor bold>
+                  {'Size'.padStart(widths.size)}
+                </Text>
+              </Box>
+              <Box width={widths.bar + GAP}>
+                <Text dimColor bold>
+                  Share
+                </Text>
+              </Box>
+              <Box width={widths.call + GAP}>
+                <Text dimColor bold>
+                  {'  Call'}
+                </Text>
+              </Box>
+              {widths.detail > 0 ? (
+                <Box width={widths.detail + GAP}>
+                  <Text dimColor bold>
+                    Detail
+                  </Text>
+                </Box>
+              ) : null}
+              <Text dimColor bold>
+                Tool
+              </Text>
+            </Box>
+            <Text dimColor>
+              {'─'.repeat(Math.max(e.props.bodyColumns, 0))}
+            </Text>
+          </Box>
+        )}
+        {rows.map((row, index) => {
+          const each = row.result;
           const isOpen = open === each.id;
-          const { title, detail } = describe(each.tool, each.input, cwd);
-          // The hotkey's `n: `, the marker, size, bar and the tool's name take
-          // their share; the title, then the detail, the rest.
-          const hotkeyWidth = index < 9 ? 3 : 0;
-          const room = columns - hotkeyWidth - 2 - sizeWidth - 1 - BAR_CELLS - 1 - nameWidth - 2;
-          const label = fitMiddle(title, room);
-          const rest = room - label.length - 2;
           return (
             <Box key={`row-${each.id}`} flexDirection="column">
               <Box flexDirection="row">
-                <Button
-                  key={`tool-${each.id}`}
-                  plain
-                  hotkey={index < 9 ? String(index + 1) : undefined}
-                  label={`${isOpen ? '▾' : '▸'} ${formatSize(each.tokens).padStart(sizeWidth)}`}
-                  onPress={() => void toggle(each.id)}
-                />
-                <Text color="suggestion"> {sizeBar(each.tokens, listed[0]!.tokens)} </Text>
-                <Text color={each.isError ? 'error' : undefined}>{label}</Text>
-                <Box flexGrow={1}>
-                  {rest > 8 && detail ? <Text dimColor>  {fitMiddle(detail, rest)}</Text> : null}
+                <Box width={widths.rank + GAP}>
+                  <Text dimColor>{String(index + 1).padStart(widths.rank)}</Text>
                 </Box>
-                <Text dimColor>  {toolName(each.tool)}</Text>
+                <Box width={widths.size + GAP}>
+                  <Text>{row.size.padStart(widths.size)}</Text>
+                </Box>
+                <Box width={widths.bar + GAP}>
+                  <Text color="suggestion">{sizeBar(each.tokens, listed[0]!.tokens)}</Text>
+                </Box>
+                <Box width={widths.call + GAP}>
+                  <Button
+                    key={`tool-${each.id}`}
+                    plain
+                    label={`${isOpen ? '▾' : '▸'} ${fitMiddle(row.title, widths.call - 2)}`}
+                    onPress={() => void toggle(each.id)}
+                  />
+                </Box>
+                {widths.detail > 0 ? (
+                  <Box width={widths.detail + GAP}>
+                    <Text dimColor>{fitMiddle(row.detail, widths.detail)}</Text>
+                  </Box>
+                ) : null}
+                {each.isError ? <Text color="error">{row.tool}</Text> : <Text dimColor>{row.tool}</Text>}
               </Box>
-              {isOpen ? details(each, columns - 4) : null}
+              {isOpen ? details(each, Math.max(e.props.bodyColumns - indent, 8)) : null}
             </Box>
           );
         })}
@@ -251,16 +320,26 @@ export function registerTools(on: On) {
     // An expanded row: the call's arguments and the start of its result.
     function details(result: ToolResult, width: number) {
       const { lines, more } = preview(result.text);
+      const args = argumentRows(result.input);
+      const keyWidth = Math.max(0, ...args.map(([key]) => key.length)) + GAP;
       return (
-        <Box flexDirection="column" paddingLeft={4}>
-          {argumentLines(result.input).map(line => (
-            <Text dimColor wrap="truncate-end">
-              {fitMiddle(line, width)}
-            </Text>
+        <Box flexDirection="column" paddingLeft={indent} marginBottom={1}>
+          {args.map(([key, value]) => (
+            <Box key={`arg-${key}`} flexDirection="row">
+              <Box width={keyWidth}>
+                <Text dimColor>{key}</Text>
+              </Box>
+              <Text wrap="truncate-end">{fitMiddle(value, width - keyWidth)}</Text>
+            </Box>
           ))}
-          <Text color={result.isError ? 'error' : 'suggestion'}>{result.isError ? 'error result' : 'result'}</Text>
+          <Text color={result.isError ? 'error' : 'suggestion'} bold>
+            {result.isError ? 'Error result' : 'Result'}
+          </Text>
           {lines.map(line => (
-            <Text wrap="truncate-end">{line.slice(0, width) || ' '}</Text>
+            <Text wrap="truncate-end">
+              <Text dimColor>│ </Text>
+              {line.slice(0, width - 2)}
+            </Text>
           ))}
           {more > 0 ? <Text dimColor>… {more} more lines</Text> : null}
         </Box>

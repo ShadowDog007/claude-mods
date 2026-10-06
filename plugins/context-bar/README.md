@@ -17,22 +17,26 @@ The band yields to a survey, and can be collapsed and restored like any band abo
 
 ## `/context-tools`
 
-Opens a pane, as wide as the terminal allows, listing the twenty largest tool results in the context, each by what its call set out to do:
+Opens a pane, as wide as the terminal allows, with a table of the twenty largest tool results in the context, each by what its call set out to do:
 
 ```
 Largest tool results in the context     54 results · ~31k of 101k in messages · 4 characters a token
-1: ▸  ~12k ██████████ Run plugin tests and type-check   claude plugin test plugins/context-bar   Bash
-2: ▾ ~5.0k ████▏      register.tsx                       plugins/context-bar/hooks                Read
-       file_path: S:\repo\plugins\context-bar\hooks\register.tsx
-       result
-       1  import { atom, read, update } from 'claude-code';
-       …
-3: ▸  ~725 ▋          "session.compact"                  in types *.ts                            Grep
+
+ #   Size  Share       Call                                Detail                                   Tool
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1   ~12k  ██████████  ▸ Run plugin tests and type-check   claude plugin test plugins/context-bar   Bash
+ 2  ~5.0k  ████▏       ▾ register.tsx                      plugins/context-bar/hooks                Read
+                         file_path  S:\repo\plugins\context-bar\hooks\register.tsx
+                         Result
+                         │ import { atom, read, update } from 'claude-code';
+                         … 412 more lines
+
+ 3   ~725  ▋           ▸ "session.compact"                 in types *.ts                            Grep
 [ Close ]
 ```
 
-- A call the model described (`Bash`, `Agent`) goes by its description, the command dimmed after it. A file goes by its name, its folder relative to the project after it. A search goes by its pattern and where it looked, and a fetch by its address.
-- Click a row, or press its number, to expand it: the call's arguments and the first lines of its result. Press it again to fold it.
+- A call the model described (`Bash`, `Agent`) goes by its description, its command in the detail. A file goes by its name, its folder relative to the project in the detail. A search goes by its pattern and where it looked, and a fetch by its address. The detail is dropped when the pane is too narrow for it, and a failed call's tool is drawn in the error colour.
+- Click a call, or Tab to it and press Enter, to expand it: the call's arguments and the first lines of its result. Press it again to fold it.
 - The header counts the results and their total against the messages' share of the window.
 - The pane is for you alone: nothing of it reaches the model. Escape, `q` or Close dismisses it.
 

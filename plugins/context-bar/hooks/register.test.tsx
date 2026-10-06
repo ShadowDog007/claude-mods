@@ -13,7 +13,7 @@ import {
   turnGrowth,
   turnLine,
 } from './register';
-import { describe, fitMiddle, sizeBar, toolName, toolResults } from './tools';
+import { describe, fitMiddle, sizeBar, tableColumns, toolName, toolResults } from './tools';
 
 const WINDOW = 200_000;
 const SURFACES = ['terminal', 'desktop'] as const;
@@ -388,6 +388,15 @@ test('fits a target to its width by cutting its middle, and sizes a bar in eight
   expect(sizeBar(1, 100_000)).toBe('▏         ');
 });
 
+test('lays the table out: the call as wide as its titles, the detail the rest, dropped when narrow', () => {
+  const rows = [
+    { size: '~5.0k', title: 'Run the tests', tool: 'Bash' },
+    { size: '~100', title: 'small.ts', tool: 'Read' },
+  ];
+  expect(tableColumns(100, rows)).toEqual({ rank: 1, size: 5, bar: 10, call: 15, detail: 55, tool: 4 });
+  expect(tableColumns(40, rows)).toEqual({ rank: 1, size: 5, bar: 10, call: 12, detail: 0, tool: 4 });
+});
+
 test('shows the tool results in a pane on /context-tools, a row expanding on a press', async ($, on) => {
   const { messages, opened } = engine(on);
   messages.push(
@@ -426,15 +435,21 @@ test('shows the tool results in a pane on /context-tools, a row expanding on a p
     props: { title: 'Largest tool results', isFocused: true, bodyColumns: 100, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} },
   });
   expect(await ui.find({ type: 'Text', text: /^2 results · ~5\.1k of 34k in messages/ })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: 'Run the tests' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: /npm test/ })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: 'small.ts' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: '12 passed' })).toBe(undefined);
+  // A header row, then a row a result, largest first, its call pressable.
+  for (const column of ['#', 'Size', 'Share', '  Call', 'Detail', 'Tool']) {
+    expect(await ui.find({ type: 'Text', text: column })).toBeDefined();
+  }
+  expect((await ui.find({ key: 'tool-t2' }))?.text).toBe('▸ Run the tests');
+  expect((await ui.find({ key: 'tool-t1' }))?.text).toBe('▸ small.ts');
+  expect(await ui.find({ type: 'Text', text: 'npm test' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'src' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBe(undefined);
 
   await ui.press({ key: 'tool-t2' });
-  expect(await ui.find({ type: 'Text', text: 'command: npm test' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: '12 passed' })).toBeDefined();
+  expect((await ui.find({ key: 'tool-t2' }))?.text).toBe('▾ Run the tests');
+  expect(await ui.find({ type: 'Text', text: 'command' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBeDefined();
   await ui.press({ key: 'tool-t2' });
-  expect(await ui.find({ type: 'Text', text: '12 passed' })).toBe(undefined);
+  expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBe(undefined);
   await ui.unmount();
 });
