@@ -26,6 +26,9 @@ export type ContextBarTurn = {
   // null when none was measured (a fresh or just-compacted session).
   contextBefore: number | null;
   steps: ContextBarStep[];
+  // The first step after a compaction within the turn, if one ran: the
+  // turn's growth is counted from there instead.
+  compactedAt: number | null;
   isRunning: boolean;
 };
 

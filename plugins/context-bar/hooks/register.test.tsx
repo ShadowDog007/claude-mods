@@ -249,6 +249,7 @@ test('counts what a turn and each of its steps added', () => {
       { context: 47_000, output: 300 },
       { context: 52_000, output: 1_000 },
     ],
+    compactedAt: null,
     isRunning: false,
   };
   expect(turnGrowth(current)).toBe(13_000);
@@ -293,6 +294,22 @@ test('draws the bar, a legend by category, and the last turn', async ($, on) => 
     expect(drawn.length).toBe(60);
     expect([drawn[12], drawn[14], drawn[15]]).toEqual(['┃', '│', '│']);
     expect(drawn.split('').filter(cell => cell === '┃' || cell === '│')).toHaveLength(3);
+    await ui.unmount();
+  }
+});
+
+test('counts a turn compacted partway from where the compaction left it', async ($, on) => {
+  const { contexts } = engine(on);
+  await turn($, contexts, [45_000, 12_000, 15_000]);
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(band(surface));
+    expect(
+      await ui.find({
+        type: 'Text',
+        text: 'Last turn: 3 steps · context 40k → compacted 12k → 15k (+3.5k) · 1.5k out · steps +5.0k compacted +3.0k',
+      }),
+    ).toBeDefined();
     await ui.unmount();
   }
 });

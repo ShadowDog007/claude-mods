@@ -56,6 +56,12 @@ async function refresh($: EngineInterface) {
   }
 }
 
+// A turn kept by an earlier version has no compactedAt.
+async function readTurn($: EngineInterface): Promise<ContextBarTurn | null> {
+  const current = await read($, turn);
+  return current === null ? null : { ...current, compactedAt: current.compactedAt ?? null };
+}
+
 function mark($: EngineInterface, boundary: ContextBarMark) {
   return update($, marks, current => [...current, boundary].slice(-MAX_MARKS));
 }
@@ -64,19 +70,28 @@ function inputSide(usage: ModelUsage) {
   return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
 }
 
-// What the turn has added to the context so far: from where it started to its
+// The context the turn's growth counts from: where it started, or where a
+// compaction within it left the context.
+function baseline(current: ContextBarTurn) {
+  return current.compactedAt === null ? current.contextBefore : current.steps[current.compactedAt]!.context;
+}
+
+// What the turn has added to the context so far: from its baseline to its
 // latest request, that request's own output included, since the next one
 // carries it.
 export function turnGrowth(current: ContextBarTurn) {
   const last = current.steps.at(-1);
-  if (last === undefined || current.contextBefore === null) return null;
-  return last.context + last.output - current.contextBefore;
+  const start = baseline(current);
+  if (last === undefined || start === null) return null;
+  return last.context + last.output - start;
 }
 
 // What each step added over the one before it (the first over the turn's
-// start); null where there is nothing to compare against.
+// start); 'compacted' for the step a compaction shrank, null where there is
+// nothing to compare against.
 export function stepGrowth(current: ContextBarTurn) {
   return current.steps.map((step, index) => {
+    if (index === current.compactedAt) return 'compacted';
     const before = index === 0 ? current.contextBefore : current.steps[index - 1]!.context;
     return before === null ? null : step.context - before;
   });
@@ -273,7 +288,7 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     const contextBefore = await read($, measured);
-    await update($, turn, () => ({ contextBefore, steps: [], isRunning: true }));
+    await update($, turn, () => ({ contextBefore, steps: [], compactedAt: null, isRunning: true }));
     if (contextBefore !== null) await mark($, { tokens: contextBefore, kind: 'turn' });
     return next(e);
   });
@@ -282,9 +297,12 @@ export const register: Register = on => {
     const result = yield* next(e);
     if (e.agentId === undefined && result.usage !== null) {
       const step: ContextBarStep = { context: inputSide(result.usage), output: result.usage.output_tokens };
-      const current = await read($, turn);
+      const current = await readTurn($);
       if (current !== null) {
-        await update($, turn, () => ({ ...current, steps: [...current.steps, step] }));
+        // The context only shrinks when a compaction runs mid-turn.
+        const previous = current.steps.at(-1)?.context ?? current.contextBefore;
+        const compactedAt = previous !== null && step.context < previous ? current.steps.length : current.compactedAt;
+        await update($, turn, () => ({ ...current, steps: [...current.steps, step], compactedAt }));
         // The first step starts where the turn does.
         if (current.steps.length > 0) await mark($, { tokens: step.context, kind: 'step' });
       }
@@ -302,7 +320,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rows = await read($, breakdown);
     if (e.props.hasSurvey || rows === null || rows.slices.length < 1) return next(e);
-    const current = await read($, turn);
+    const current = await readTurn($);
     const growth = current === null ? null : turnGrowth(current);
     const { Box, Text } = $.ui.resolve(e);
 
@@ -325,14 +343,21 @@ export const register: Register = on => {
         ? null
         : [
             `${current.isRunning ? 'This turn' : 'Last turn'}: ${current.steps.length} step${current.steps.length === 1 ? '' : 's'}`,
-            current.contextBefore === null
+            current.contextBefore === null && current.compactedAt === null
               ? `context ${formatTokens(current.steps.at(-1)!.context)}`
-              : `context ${formatTokens(current.contextBefore)} → ${formatTokens(current.steps.at(-1)!.context)}` +
+              : 'context ' +
+                [
+                  current.contextBefore === null ? null : formatTokens(current.contextBefore),
+                  current.compactedAt === null ? null : `compacted ${formatTokens(baseline(current)!)}`,
+                  formatTokens(current.steps.at(-1)!.context),
+                ]
+                  .filter(part => part !== null)
+                  .join(' → ') +
                 (growth === null ? '' : ` (${signed(growth)})`),
             `${formatTokens(current.steps.reduce((sum, step) => sum + step.output, 0))} out`,
             shown.length < 2
               ? null
-              : `steps ${steps.length > shown.length ? '… ' : ''}${shown.map(delta => (delta === null ? '?' : signed(delta))).join(' ')}`,
+              : `steps ${steps.length > shown.length ? '… ' : ''}${shown.map(delta => (delta === null ? '?' : delta === 'compacted' ? delta : signed(delta))).join(' ')}`,
           ]
             .filter(part => part !== null)
             .join(' · ');
