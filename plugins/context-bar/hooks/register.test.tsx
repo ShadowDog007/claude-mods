@@ -2,7 +2,19 @@ import type { ContextCategory, On } from 'claude-code';
 import type { Engine } from 'claude-code/testing';
 import { expect, test } from 'claude-code/testing';
 
-import { allocate, bar, barWidth, formatTokens, legend, segments, stepGrowth, turnGrowth, turnLine } from './register';
+import {
+  allocate,
+  bar,
+  barWidth,
+  formatTokens,
+  keepLargest,
+  legend,
+  segments,
+  stepGrowth,
+  toolTarget,
+  turnGrowth,
+  turnLine,
+} from './register';
 
 const WINDOW = 200_000;
 const SURFACES = ['terminal', 'desktop'] as const;
@@ -84,6 +96,13 @@ function engine(on: On) {
       },
     },
   }));
+  on('command.register', (_$, e) => ({ value: { command: e.name } }));
+  on('session.compact', (_$, e) => ({ messages: e.messages }));
+  // Every tool answers with as many characters as its `file_path` says.
+  on('tool.call', (_$, e) => {
+    const size = Number((e as { file_path?: string }).file_path?.match(/\d+/)?.[0] ?? 0);
+    return { result: {}, text: 'x'.repeat(size) };
+  });
   const contexts: number[] = [];
   on('turn.step', async function* (_$, e) {
     const context = contexts.shift() ?? 0;
@@ -311,6 +330,48 @@ test('yields the band to a survey', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
     await ui.unmount();
   }
+});
+
+test('names what a tool was called on, on one line', () => {
+  expect(toolTarget({ file_path: 'src/a.ts', pattern: 'x' })).toBe('src/a.ts');
+  expect(toolTarget({ command: 'git\n  status' })).toBe('git status');
+  expect(toolTarget({ command: 'x'.repeat(200) })).toHaveLength(80);
+  expect(toolTarget({ other: 1 })).toBe('');
+});
+
+test('keeps the largest tool results, largest first', () => {
+  let list: ReturnType<typeof keepLargest> = [];
+  for (let tokens = 1; tokens <= 30; tokens++) list = keepLargest(list, { tool: 'Read', target: `${tokens}`, tokens });
+  expect(list).toHaveLength(20);
+  expect(list[0]!.tokens).toBe(30);
+  expect(list.at(-1)!.tokens).toBe(11);
+});
+
+test('lists the largest tool results on /context-tools, forgetting them at a compaction', async ($, on) => {
+  engine(on);
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
+  await $.tool.call({ tool: 'Read', file_path: 'small-400.ts' } as never);
+  await $.tool.call({ tool: 'Read', file_path: 'large-20000.ts' } as never);
+  // A subagent's result stays in its own context.
+  await $.tool.call({ tool: 'Read', file_path: 'agent-90000.ts', agentId: 'a1' } as never);
+
+  const run = (args: string) =>
+    $.command.run({ command: 'context-tools', args, origin: { kind: 'composer' } } as never) as Promise<{ text?: string }>;
+  expect((await run('')).text).toBe(
+    [
+      'Largest tool results in the context (estimated at 4 characters a token):',
+      '  ~5.0k  Read  large-20000.ts',
+      '   ~100  Read  small-400.ts',
+    ].join('\n'),
+  );
+  expect((await run('1')).text?.split('\n')).toHaveLength(2);
+
+  // A precompute only prepares a summary; a compaction installs it.
+  const messages = [{ role: 'user' as const, text: 'Summary', toolUses: [] }];
+  await $.session.compact({ trigger: 'precompute', messages });
+  expect((await run('1')).text?.split('\n')).toHaveLength(2);
+  await $.session.compact({ trigger: 'manual', messages });
+  expect((await run('')).text).toBe('No tool results in the context yet.');
 });
 
 test('forgets the conversation on /clear', async ($, on) => {

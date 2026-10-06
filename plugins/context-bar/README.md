@@ -15,6 +15,18 @@ Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · steps +1.0k +6.0
 
 The band yields to a survey, and can be collapsed and restored like any band above the prompt (`ctrl+x ctrl+a`, or the `[-]`/`[+]` at its right edge).
 
+## `/context-tools [count]`
+
+Lists the largest tool results still in the context, ten by default, each with its estimated tokens, the tool, and what it was called on:
+
+```
+Largest tool results in the context (estimated at 4 characters a token):
+   ~12k  Bash  npm test
+  ~5.0k  Read  src/engine.ts
+```
+
+Only the main conversation's results are counted (a subagent's stay in its own context). The list clears at a compaction and at `/clear`. Sizes are estimated from each result's text at about four characters a token, so images are not counted.
+
 ## Notes
 
 - The categories are the engine's local estimate (`/context`'s summary breakdown), refreshed after every response. It sends no requests, so it costs nothing. The estimate is measured against the compaction window and need not match the status line's figure exactly.

@@ -1,7 +1,17 @@
 import { atom, read, update } from 'claude-code';
 import type { EngineInterface, ModelUsage, Register } from 'claude-code';
 
-import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
+import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarToolResult, ContextBarTurn } from '../types';
+
+const COMMAND = 'context-tools';
+// The tool results kept, and how many the command lists unless told.
+const MAX_TOOL_RESULTS = 20;
+const TOOL_RESULTS_LISTED = 10;
+// A tool result's tokens, estimated from its text's length.
+const CHARS_PER_TOKEN = 4;
+// The arguments that say what a tool was called on, the first one present.
+const TARGET_KEYS = ['file_path', 'notebook_path', 'path', 'command', 'pattern', 'url', 'query', 'skill', 'description'];
+const MAX_TARGET_LENGTH = 80;
 
 // The steps the turn line lists, newest last.
 const MAX_STEPS_SHOWN = 8;
@@ -27,6 +37,7 @@ const SHORT_NAMES: [prefix: string, name: string][] = [
 const breakdown = atom({ plugin: 'context-bar', key: 'breakdown' } as const, null);
 const measured = atom({ plugin: 'context-bar', key: 'measured' } as const, null);
 const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
+const toolResults = atom({ plugin: 'context-bar', key: 'toolResults' } as const, []);
 
 // Re-estimates the window by category. `summary` counts locally and sends no
 // request, so it is cheap enough to run after every response.
@@ -105,6 +116,37 @@ export function turnLine(current: ContextBarTurn) {
   ]
     .filter(part => part !== null)
     .join(' · ');
+}
+
+// What a tool was called on, by its first argument of TARGET_KEYS, on one line.
+export function toolTarget(input: Record<string, unknown>) {
+  const value = TARGET_KEYS.map(key => input[key]).find(each => typeof each === 'string' && each.length > 0);
+  if (typeof value !== 'string') return '';
+  const line = value.replace(/\s+/g, ' ').trim();
+  return line.length > MAX_TARGET_LENGTH ? `${line.slice(0, MAX_TARGET_LENGTH - 1)}…` : line;
+}
+
+// `list` with `result` in its place, largest first, the smallest past the cap
+// dropped.
+export function keepLargest(list: readonly ContextBarToolResult[], result: ContextBarToolResult) {
+  const index = list.findIndex(each => each.tokens < result.tokens);
+  const next = index < 0 ? [...list, result] : [...list.slice(0, index), result, ...list.slice(index)];
+  return next.slice(0, MAX_TOOL_RESULTS);
+}
+
+// The command's answer: the `count` largest tool results, one a line.
+export function toolResultsReport(list: readonly ContextBarToolResult[], count: number) {
+  if (list.length < 1) return 'No tool results in the context yet.';
+  const shown = list.slice(0, count);
+  const sizes = shown.map(each => `~${formatTokens(each.tokens)}`);
+  const sizeWidth = Math.max(...sizes.map(size => size.length));
+  const toolWidth = Math.max(...shown.map(each => each.tool.length));
+  return [
+    `Largest tool results in the context (estimated at ${CHARS_PER_TOKEN} characters a token):`,
+    ...shown.map((each, index) =>
+      `  ${sizes[index]!.padStart(sizeWidth)}  ${each.tool.padEnd(toolWidth)}  ${each.target}`.trimEnd(),
+    ),
+  ].join('\n');
 }
 
 type Segment = { name: string; tokens: number; color: string; kind: ContextBarSlice['kind'] | 'turn' };
@@ -228,6 +270,12 @@ export function legend(parts: Segment[], columns: number): LegendItem[] {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    await $.command.register({
+      name: COMMAND,
+      description: 'List the largest tool results in the context',
+      argumentHint: '[count]',
+      immediate: true,
+    });
     const result = await next(e);
     await refresh($);
     return result;
@@ -239,8 +287,39 @@ export const register: Register = on => {
       await update($, breakdown, () => null);
       await update($, measured, () => null);
       await update($, turn, () => null);
+      await update($, toolResults, () => []);
     }
     return next(e);
+  });
+
+  // A compaction replaces the tool results with its summary; a precompute only
+  // prepares one, and a skipped one keeps them.
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e);
+    if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
+      await update($, toolResults, () => []);
+    }
+    return result;
+  });
+
+  // Subagents' results stay in their own context, so only the main loop's count.
+  on('tool.call', async ($, e, next) => {
+    const ran = await next(e);
+    if (e.agentId === undefined && ran.deny === undefined && ran.text !== undefined) {
+      const result: ContextBarToolResult = {
+        tool: e.tool,
+        target: toolTarget(e as unknown as Record<string, unknown>),
+        tokens: Math.ceil(ran.text.length / CHARS_PER_TOKEN),
+      };
+      await update($, toolResults, list => keepLargest(list, result));
+    }
+    return ran;
+  });
+
+  on('command.run', { command: COMMAND }, async ($, e) => {
+    const count = Number.parseInt(e.args.trim(), 10);
+    const list = await read($, toolResults);
+    return { text: toolResultsReport(list, Number.isInteger(count) && count > 0 ? count : TOOL_RESULTS_LISTED) };
   });
 
   on('session.measure', async ($, e, next) => {

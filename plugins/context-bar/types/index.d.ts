@@ -32,6 +32,10 @@ export type ContextBarTurn = {
   isRunning: boolean;
 };
 
+// One tool result of the main conversation still in the context: the tool,
+// what it was called on, and its text's estimated tokens.
+export type ContextBarToolResult = { tool: string; target: string; tokens: number };
+
 declare module 'claude-code' {
   interface PluginState {
     'context-bar': {
@@ -39,6 +43,8 @@ declare module 'claude-code' {
       // The input side of the last response, as the status line reports it.
       measured: number | null;
       turn: ContextBarTurn | null;
+      // The largest tool results since the last compaction, largest first.
+      toolResults: ContextBarToolResult[];
     };
   }
 }
