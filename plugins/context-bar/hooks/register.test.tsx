@@ -13,7 +13,7 @@ import {
   turnGrowth,
   turnLine,
 } from './register';
-import { describe, fitMiddle, sizeBar, tableColumns, toolName, toolResults } from './tools';
+import { describe, fitMiddle, reminderTokens, sizeBar, tableColumns, toolName, toolResults } from './tools';
 
 const WINDOW = 200_000;
 const SURFACES = ['terminal', 'desktop'] as const;
@@ -378,6 +378,24 @@ test('pairs each tool result with its call, largest first', () => {
     ['Bash', 1_000, true],
     ['Read', 100, false],
   ]);
+});
+
+test('leaves the reminders attached to a result out of its size, counting them apart', () => {
+  // 400 characters: 100 tokens.
+  const reminder = `<system-reminder>${'r'.repeat(365)}</system-reminder>`;
+  const messages = [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Edit', input: { file_path: 'a.ts' } }] },
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'a', content: `${'x'.repeat(40)}\n\n${reminder}\n\n${reminder}` },
+        { type: 'text', text: reminder },
+      ],
+    },
+  ];
+  const [result] = toolResults(messages);
+  expect([result!.tokens, result!.text]).toEqual([10, 'x'.repeat(40)]);
+  expect(reminderTokens(messages)).toBe(300);
 });
 
 test('fits a target to its width by cutting its middle, and sizes a bar in eighths', () => {

@@ -38,6 +38,7 @@ Largest tool results in the context     54 results Â· ~31k of 101k in messages Â
 - A call the model described (`Bash`, `Agent`) goes by its description, its command in the detail. A file goes by its name, its folder relative to the project in the detail. A search goes by its pattern and where it looked, and a fetch by its address. The detail is dropped when the pane is too narrow for it, and a failed call's tool is drawn in the error colour.
 - Click a call, or Tab to it and press Enter, to expand it: the call's arguments and the first lines of its result. Press it again to fold it.
 - The header counts the results and their total against the messages' share of the window.
+- Each result is sized by the tool's own output. The `<system-reminder>` blocks Claude Code attaches to whichever result comes next are left out of it and counted together in the header.
 - The pane is for you alone: nothing of it reaches the model. Escape, `q` or Close dismisses it.
 
 The list is read from the context as it stands when drawn, so it holds what a compaction kept and nothing it dropped, and is drawn again after every response. Sizes are estimated from each result's text at about four characters a token, so images are not counted.

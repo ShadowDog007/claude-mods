@@ -32,7 +32,10 @@ export type ToolResult = {
 type Block = { type: string; [field: string]: unknown };
 type Message = { role: string; content: Block[] };
 
-function resultText(content: unknown) {
+// What Claude Code attaches to a message, whichever tool's result it lands in.
+const REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+
+function blockText(content: unknown) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   return (content as Block[])
@@ -41,8 +44,25 @@ function resultText(content: unknown) {
     .join('\n');
 }
 
+// A result's own text: its reminders cut out, and the blank lines they left.
+function resultText(content: unknown) {
+  return blockText(content).replace(REMINDER, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// The reminders in `messages`, in tokens: in tool results or beside them.
+export function reminderTokens(messages: readonly Message[]) {
+  let chars = 0;
+  for (const message of messages) {
+    for (const block of message.content) {
+      const text = block.type === 'tool_result' ? blockText(block.content) : block.type === 'text' ? blockText([block]) : '';
+      for (const reminder of text.match(REMINDER) ?? []) chars += reminder.length;
+    }
+  }
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
 // The tool results of `messages` (the context in API form), largest first,
-// each paired with the call it answers.
+// each paired with the call it answers and sized by its own text.
 export function toolResults(messages: readonly Message[]): ToolResult[] {
   const calls = new Map<string, Block>();
   const results: ToolResult[] = [];
@@ -204,6 +224,7 @@ export function registerTools(on: On) {
       messagesTokens($),
     ]);
     const all = Array.isArray(messages) ? toolResults(messages as Message[]) : [];
+    const reminders = Array.isArray(messages) ? reminderTokens(messages as Message[]) : 0;
     const listed = all.slice(0, MAX_LISTED);
     const total = all.reduce((sum, each) => sum + each.tokens, 0);
     const rows = listed.map(each => ({
@@ -224,6 +245,7 @@ export function registerTools(on: On) {
     const header = [
       `${listed.length < all.length ? `${listed.length} of ` : ''}${all.length} result${all.length === 1 ? '' : 's'}`,
       `${formatSize(total)}${inMessages === null ? '' : ` of ${formatSize(inMessages).slice(1)} in messages`}`,
+      ...(reminders > 0 ? [`${formatSize(reminders)} in reminders`] : []),
       `${CHARS_PER_TOKEN} characters a token`,
     ].join(' · ');
 
