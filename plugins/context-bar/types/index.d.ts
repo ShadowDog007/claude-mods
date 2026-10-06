@@ -32,10 +32,6 @@ export type ContextBarTurn = {
   isRunning: boolean;
 };
 
-// Where a turn or a step of the main conversation began, by the context it
-// started from: the bar draws a marker there.
-export type ContextBarMark = { tokens: number; kind: 'turn' | 'step' };
-
 declare module 'claude-code' {
   interface PluginState {
     'context-bar': {
@@ -43,9 +39,6 @@ declare module 'claude-code' {
       // The input side of the last response, as the status line reports it.
       measured: number | null;
       turn: ContextBarTurn | null;
-      // The boundaries within the live context, oldest first; a compaction
-      // drops those past it, /clear all of them.
-      marks: ContextBarMark[];
     };
   }
 }

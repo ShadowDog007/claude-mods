@@ -1,19 +1,15 @@
 import { atom, read, update } from 'claude-code';
 import type { EngineInterface, ModelUsage, Register } from 'claude-code';
 
-import type { ContextBarBreakdown, ContextBarMark, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
+import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
 
 // The steps the turn line lists, newest last.
 const MAX_STEPS_SHOWN = 8;
 // The bar's narrowest, in cells; otherwise it fills the band beside its summary.
 const MIN_BAR_CELLS = 10;
-// The turn and step boundaries kept, newest last; far more than a bar has cells.
-const MAX_MARKS = 500;
 // What the newest part of the conversation is drawn in: the first of these no
 // other segment draws in.
 const LAST_TURN_COLORS = ['warning', 'suggestion', 'success', 'permission'];
-// A boundary's line, drawn over its cell's colour so the segment stays filled.
-const MARK_COLOR = 'inverseText';
 
 // The short names for /context's rows, by the start of the row's name, in the
 // order the bar draws them; a row named otherwise goes by its first word, just
@@ -37,7 +33,6 @@ function rank(slice: ContextBarSlice) {
 const breakdown = atom({ plugin: 'context-bar', key: 'breakdown' } as const, null);
 const measured = atom({ plugin: 'context-bar', key: 'measured' } as const, null);
 const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
-const marks = atom({ plugin: 'context-bar', key: 'marks' } as const, []);
 
 // Re-estimates the window by category. `summary` counts locally and sends no
 // request, so it is cheap enough to run after every response.
@@ -60,10 +55,6 @@ async function refresh($: EngineInterface) {
 async function readTurn($: EngineInterface): Promise<ContextBarTurn | null> {
   const current = await read($, turn);
   return current === null ? null : { ...current, compactedAt: current.compactedAt ?? null };
-}
-
-function mark($: EngineInterface, boundary: ContextBarMark) {
-  return update($, marks, current => [...current, boundary].slice(-MAX_MARKS));
 }
 
 function inputSide(usage: ModelUsage) {
@@ -188,47 +179,18 @@ export function barWidth(columns: number, summaryWidth: number) {
 }
 
 const GLYPH: Record<Segment['kind'], string> = { used: '█', turn: '█', free: '░', buffer: '▒' };
-const MARK_GLYPH: Record<ContextBarMark['kind'], string> = { turn: '┃', step: '│' };
 
-export type Run = { text: string; color: string | undefined; background: string | undefined; isDim: boolean };
+export type Run = { text: string; color: string | undefined; isDim: boolean };
 
-// The bar as runs of text: each segment's cells in its glyph, a turn's or a
-// step's boundary drawn as a line on the colour of the content cell its tokens
-// fall in. Boundaries
-// in one cell draw as one, a turn's over a step's, so the bar is as wide as
-// the counts add up to whatever their number. Neighbouring cells of one style
-// are one run.
-export function bar(parts: Segment[], counts: number[], boundaries: readonly ContextBarMark[]): Run[] {
-  const cells: (Run & { isContent: boolean })[] = [];
-  for (const [index, part] of parts.entries()) {
-    for (let count = 0; count < counts[index]!; count++) {
-      cells.push({
-        text: GLYPH[part.kind],
-        color: part.kind === 'free' ? undefined : part.color,
-        background: undefined,
-        isDim: part.kind === 'free',
-        isContent: isContent(part),
-      });
-    }
-  }
-  const total = parts.reduce((sum, part) => sum + part.tokens, 0);
-  const at = new Map<number, ContextBarMark['kind']>();
-  for (const boundary of total > 0 ? boundaries : []) {
-    const index = Math.min(Math.floor((boundary.tokens / total) * cells.length), cells.length - 1);
-    if (index >= 0 && at.get(index) !== 'turn') at.set(index, boundary.kind);
-  }
-  for (const [index, kind] of at) {
-    const cell = cells[index]!;
-    if (cell.isContent) cells[index] = { ...cell, text: MARK_GLYPH[kind], color: MARK_COLOR, background: cell.color };
-  }
-
-  const runs: Run[] = [];
-  for (const { text, color, background, isDim } of cells) {
-    const last = runs.at(-1);
-    if (last !== undefined && last.color === color && last.background === background && last.isDim === isDim) last.text += text;
-    else runs.push({ text, color, background, isDim });
-  }
-  return runs;
+// The bar as runs of text, one per segment drawn: its cells in its glyph.
+export function bar(parts: Segment[], counts: number[]): Run[] {
+  return parts
+    .map((part, index) => ({
+      text: GLYPH[part.kind].repeat(counts[index]!),
+      color: part.kind === 'free' ? undefined : part.color,
+      isDim: part.kind === 'free',
+    }))
+    .filter(run => run.text.length > 0);
 }
 
 type LegendItem = { segment: Segment; label: string };
@@ -270,7 +232,6 @@ export const register: Register = on => {
       await update($, breakdown, () => null);
       await update($, measured, () => null);
       await update($, turn, () => null);
-      await update($, marks, () => []);
     }
     return next(e);
   });
@@ -279,10 +240,6 @@ export const register: Register = on => {
     if (e.changed.includes('context')) {
       const tokens = e.context.tokens ?? null;
       await update($, measured, () => tokens);
-      // A compaction shrinks the context, and the boundaries past it are gone.
-      await update($, marks, current =>
-        tokens === null ? [] : current.some(each => each.tokens > tokens) ? current.filter(each => each.tokens <= tokens) : current,
-      );
       await refresh($);
     }
     return next(e);
@@ -291,7 +248,6 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     const contextBefore = await read($, measured);
     await update($, turn, () => ({ contextBefore, steps: [], compactedAt: null, isRunning: true }));
-    if (contextBefore !== null) await mark($, { tokens: contextBefore, kind: 'turn' });
     return next(e);
   });
 
@@ -305,8 +261,6 @@ export const register: Register = on => {
         const previous = current.steps.at(-1)?.context ?? current.contextBefore;
         const compactedAt = previous !== null && step.context < previous ? current.steps.length : current.compactedAt;
         await update($, turn, () => ({ ...current, steps: [...current.steps, step], compactedAt }));
-        // The first step starts where the turn does.
-        if (current.steps.length > 0) await mark($, { tokens: step.context, kind: 'step' });
       }
     }
     return result;
@@ -336,7 +290,7 @@ export const register: Register = on => {
       barWidth(e.props.bodyColumns, summary.length),
       parts.map(isContent),
     );
-    const runs = bar(parts, counts, await read($, marks));
+    const runs = bar(parts, counts);
 
     const steps = current === null ? [] : stepGrowth(current);
     const shown = steps.slice(-MAX_STEPS_SHOWN);
@@ -369,7 +323,7 @@ export const register: Register = on => {
         <Box flexDirection="row">
           <Box key="bar" flexDirection="row">
             {runs.map(run => (
-              <Text color={run.color} backgroundColor={run.background} dimColor={run.isDim}>
+              <Text color={run.color} dimColor={run.isDim}>
                 {run.text}
               </Text>
             ))}

@@ -223,26 +223,18 @@ test('fills the band beside its summary, down to a floor', () => {
   expect(barWidth(12, 14)).toBe(10);
 });
 
-test('draws boundaries over content only, as one marker per cell, at a fixed width', () => {
+test('draws each segment as one run in its glyph, the free space dimmed', () => {
   const parts = [
-    { name: 'Messages', tokens: 50, color: 'claude', kind: 'used' as const },
-    { name: 'Free', tokens: 50, color: 'promptBorder', kind: 'free' as const },
+    { name: 'Messages', tokens: 30, color: 'claude', kind: 'used' as const },
+    { name: 'Turn', tokens: 20, color: 'warning', kind: 'turn' as const },
+    { name: 'Free', tokens: 40, color: 'promptBorder', kind: 'free' as const },
+    { name: 'Buffer', tokens: 10, color: 'inactive', kind: 'buffer' as const },
   ];
-  const marks = [
-    { tokens: 20, kind: 'step' as const },
-    { tokens: 21, kind: 'turn' as const },
-    { tokens: 22, kind: 'step' as const },
-    { tokens: 40, kind: 'step' as const },
-    // In the free space: not drawn.
-    { tokens: 70, kind: 'turn' as const },
-    ...Array.from({ length: 400 }, (_, index) => ({ tokens: 41 + (index % 9), kind: 'step' as const })),
-  ];
-  const runs = bar(parts, [10, 10], marks);
-  const text = runs.map(run => run.text).join('');
-  expect(text).toBe('████┃███││░░░░░░░░░░');
-  expect(runs.length).toBeLessThanOrEqual(20);
-  // On the colour of the segment they mark, so it stays filled.
-  expect(runs.filter(run => run.text === '┃' || run.text === '││').map(run => run.background)).toEqual(['claude', 'claude']);
+  expect(bar(parts, [6, 4, 8, 0])).toEqual([
+    { text: '██████', color: 'claude', isDim: false },
+    { text: '████', color: 'warning', isDim: false },
+    { text: '░░░░░░░░', color: undefined, isDim: true },
+  ]);
 });
 
 test('counts what a turn and each of its steps added', () => {
@@ -292,12 +284,10 @@ test('draws the bar, a legend by category, and the last turn', async ($, on) => 
       await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · steps +1.0k +6.0k +5.0k' }),
     ).toBeDefined();
 
-    // The turn starts at 40k of 200k, its later steps at 47k and 52k: cells
-    // 13, 15 and 16 of the 65 beside the summary.
+    // The 65 cells beside the summary, with no markers.
     const drawn = (await ui.find({ key: 'bar' }))!.text;
     expect(drawn.length).toBe(65);
-    expect([drawn[13], drawn[15], drawn[16]]).toEqual(['┃', '│', '│']);
-    expect(drawn.split('').filter(cell => cell === '┃' || cell === '│')).toHaveLength(3);
+    expect(drawn).toMatch(/^█+░+▒+$/);
     await ui.unmount();
   }
 });
