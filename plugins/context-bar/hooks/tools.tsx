@@ -155,6 +155,7 @@ export function tableColumns(columns: number, rows: { size: string; title: strin
   const rank = String(rows.length).length;
   const size = Math.max(4, ...rows.map(row => row.size.length));
   const tool = Math.max(4, ...rows.map(row => row.tool.length));
+  // What the call, a gap and the detail share, past the fixed columns and their gaps.
   const room = columns - rank - size - BAR_CELLS - tool - 4 * GAP;
   // A title follows its row's marker and a space.
   const titles = Math.max(4, ...rows.map(row => row.title.length)) + 2;
@@ -213,7 +214,7 @@ export function registerTools(on: On) {
     }));
     const widths = tableColumns(e.props.bodyColumns, rows);
     // Where the call column starts, past its row's marker, as details indent to.
-    const indent = widths.rank + widths.size + widths.bar + 3 * GAP + 2;
+    const indent = widths.rank + widths.size + widths.bar + widths.tool + 4 * GAP + 2;
     const close = () => void $.ui.close({ id: TOOLS_PANE });
     const toggle = async (id: string) => {
       await update($, expanded, current => (current === id ? null : id));
@@ -254,21 +255,21 @@ export function registerTools(on: On) {
                   Share
                 </Text>
               </Box>
+              <Box width={widths.tool + GAP}>
+                <Text dimColor bold>
+                  Tool
+                </Text>
+              </Box>
               <Box width={widths.call + GAP}>
                 <Text dimColor bold>
                   {'  Call'}
                 </Text>
               </Box>
               {widths.detail > 0 ? (
-                <Box width={widths.detail + GAP}>
-                  <Text dimColor bold>
-                    Detail
-                  </Text>
-                </Box>
+                <Text dimColor bold>
+                  Detail
+                </Text>
               ) : null}
-              <Text dimColor bold>
-                Tool
-              </Text>
             </Box>
             <Text dimColor>
               {'─'.repeat(Math.max(e.props.bodyColumns, 0))}
@@ -290,6 +291,9 @@ export function registerTools(on: On) {
                 <Box width={widths.bar + GAP}>
                   <Text color="suggestion">{sizeBar(each.tokens, listed[0]!.tokens)}</Text>
                 </Box>
+                <Box width={widths.tool + GAP}>
+                  {each.isError ? <Text color="error">{row.tool}</Text> : <Text dimColor>{row.tool}</Text>}
+                </Box>
                 <Box width={widths.call + GAP}>
                   <Button
                     key={`tool-${each.id}`}
@@ -298,12 +302,7 @@ export function registerTools(on: On) {
                     onPress={() => void toggle(each.id)}
                   />
                 </Box>
-                {widths.detail > 0 ? (
-                  <Box width={widths.detail + GAP}>
-                    <Text dimColor>{fitMiddle(row.detail, widths.detail)}</Text>
-                  </Box>
-                ) : null}
-                {each.isError ? <Text color="error">{row.tool}</Text> : <Text dimColor>{row.tool}</Text>}
+                {widths.detail > 0 ? <Text dimColor>{fitMiddle(row.detail, widths.detail)}</Text> : null}
               </Box>
               {isOpen ? details(each, Math.max(e.props.bodyColumns - indent, 8)) : null}
             </Box>

@@ -22,16 +22,16 @@ Opens a pane, as wide as the terminal allows, with a table of the twenty largest
 ```
 Largest tool results in the context     54 results · ~31k of 101k in messages · 4 characters a token
 
- #   Size  Share       Call                                Detail                                   Tool
+ #   Size  Share       Tool  Call                                Detail
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1   ~12k  ██████████  ▸ Run plugin tests and type-check   claude plugin test plugins/context-bar   Bash
- 2  ~5.0k  ████▏       ▾ register.tsx                      plugins/context-bar/hooks                Read
-                         file_path  S:\repo\plugins\context-bar\hooks\register.tsx
-                         Result
-                         │ import { atom, read, update } from 'claude-code';
-                         … 412 more lines
+ 1   ~12k  ██████████  Bash  ▸ Run plugin tests and type-check   claude plugin test plugins/context-bar
+ 2  ~5.0k  ████▏       Read  ▾ register.tsx                      plugins/context-bar/hooks
+                               file_path  S:\repo\plugins\context-bar\hooks\register.tsx
+                               Result
+                               │ import { atom, read, update } from 'claude-code';
+                               … 412 more lines
 
- 3   ~725  ▋           ▸ "session.compact"                 in types *.ts                            Grep
+ 3   ~725  ▋           Grep  ▸ "session.compact"                 in types *.ts
 [ Close ]
 ```
 
