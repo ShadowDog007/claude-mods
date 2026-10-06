@@ -15,6 +15,12 @@
       "source": "./plugins/idle-compact",
       "description": "Runs /compact while the session sits idle waiting on background work, right before the prompt cache expires.",
       "version": "0.1.0"
+    },
+    {
+      "name": "context-bar",
+      "source": "./plugins/context-bar",
+      "description": "A coloured bar above the prompt showing what fills the context window, by category, and how much the last turn and its steps added.",
+      "version": "0.1.0"
     }
   ]
 }

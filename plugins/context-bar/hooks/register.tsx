@@ -1,0 +1,341 @@
+import { atom, read, update } from 'claude-code';
+import type { EngineInterface, ModelUsage, Register } from 'claude-code';
+
+import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
+import { formatTokens, registerTools, TOOLS_PANE } from './tools';
+
+// Kept in the session's state, so a reload of the module draws at once rather
+// than waiting for the next response.
+const breakdown = atom({ plugin: 'context-bar', key: 'breakdown' } as const, null);
+const measured = atom({ plugin: 'context-bar', key: 'measured' } as const, null);
+const cost = atom({ plugin: 'context-bar', key: 'cost' } as const, null);
+const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
+
+// The steps the turn line lists, newest last.
+const MAX_STEPS_SHOWN = 8;
+// The bar's narrowest, in cells; otherwise it fills the band beside its summary.
+const MIN_BAR_CELLS = 10;
+// What the last turn is drawn in: the first of these no other segment uses.
+const LAST_TURN_COLORS = ['warning', 'suggestion', 'success', 'permission'];
+
+// The short names for /context's rows, by the start of the row's name, in the
+// order the bar draws them. A row named otherwise goes by its first word, just
+// before the messages, which stay last so the last turn can be carved off them.
+const SHORT_NAMES: [prefix: string, name: string][] = [
+  ['System', 'System'],
+  ['MCP', 'MCP'],
+  ['Custom agents', 'Agents'],
+  ['Skills', 'Skills'],
+  ['Memory', 'Memory'],
+  ['Messages', 'Messages'],
+];
+
+// Re-estimates the window by category. `summary` counts locally and sends no
+// request, so it is cheap enough to run after every response.
+async function refresh($: EngineInterface) {
+  try {
+    const usage = await $.session.usage({ breakdown: 'summary' });
+    await update($, cost, () => usage.cost?.usd ?? null);
+    const rows = usage.context.breakdown;
+    if (rows === undefined) return;
+    const slices: ContextBarSlice[] = [];
+    for (const { name, tokens, color, kind } of rows.categories) {
+      if (kind !== 'deferred' && tokens > 0) slices.push({ name, tokens, color, kind });
+    }
+    await update($, breakdown, () => ({ slices, window: rows.rawMaxTokens }));
+  } catch (error) {
+    $.ui.log(`context-bar: could not break the context down: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function inputSide(usage: ModelUsage) {
+  return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+}
+
+// What the turn has added to the context so far, from where it started (or
+// where a compaction within it left the context) to its latest request, that
+// request's own output included, since the next one carries it.
+function turnGrowth(current: ContextBarTurn) {
+  const last = current.steps.at(-1);
+  const start = current.compactedAt === null ? current.contextBefore : current.steps[current.compactedAt]!.context;
+  if (last === undefined || start === null) return null;
+  return last.context + last.output - start;
+}
+
+// What each step added over the one before it (the first over the turn's
+// start): 'compacted' for the step a compaction shrank, null where there is
+// nothing to compare against.
+function stepGrowth(current: ContextBarTurn) {
+  return current.steps.map((step, index) => {
+    if (index === current.compactedAt) return 'compacted';
+    const before = index === 0 ? current.contextBefore : current.steps[index - 1]!.context;
+    return before === null ? null : step.context - before;
+  });
+}
+
+function signed(tokens: number) {
+  return `${tokens < 0 ? '-' : '+'}${formatTokens(Math.abs(tokens))}`;
+}
+
+function formatUsd(usd: number) {
+  return `$${usd.toFixed(2)}`;
+}
+
+// The line under the legend: the turn's requests, the context it went from
+// and to, what it generated and cost (from the session's cost `costNow`), and
+// what each of its last steps added.
+export function turnLine(current: ContextBarTurn, costNow: number | null) {
+  const last = current.steps.at(-1);
+  if (last === undefined) return null;
+  const growth = turnGrowth(current);
+  const context = [
+    current.contextBefore === null ? null : formatTokens(current.contextBefore),
+    current.compactedAt === null ? null : `compacted ${formatTokens(current.steps[current.compactedAt]!.context)}`,
+    formatTokens(last.context),
+  ].filter(point => point !== null);
+  const steps = stepGrowth(current);
+  const shown = steps
+    .slice(-MAX_STEPS_SHOWN)
+    .map(delta => (delta === null ? '?' : delta === 'compacted' ? delta : signed(delta)));
+  const count = current.steps.length;
+  return [
+    `${current.isRunning ? 'This turn' : 'Last turn'}: ${count} step${count === 1 ? '' : 's'}`,
+    `context ${context.join(' → ')}${growth === null ? '' : ` (${signed(growth)})`}`,
+    `${formatTokens(current.steps.reduce((sum, step) => sum + step.output, 0))} out`,
+    current.costBefore === null || costNow === null ? null : formatUsd(costNow - current.costBefore),
+    shown.length < 2 ? null : `steps ${steps.length > shown.length ? '… ' : ''}${shown.join(' ')}`,
+  ]
+    .filter(part => part !== null)
+    .join(' · ');
+}
+
+type Segment = { name: string; tokens: number; color: string; kind: ContextBarSlice['kind'] | 'turn' };
+
+function isContent(segment: Segment) {
+  return segment.kind === 'used' || segment.kind === 'turn';
+}
+
+// How a segment's cells and its legend label are drawn: the free space dimmed.
+function style(segment: Segment) {
+  return segment.kind === 'free' ? { color: undefined, isDim: true } : { color: segment.color, isDim: false };
+}
+
+function knownIndex(slice: ContextBarSlice) {
+  return SHORT_NAMES.findIndex(([prefix]) => slice.name.startsWith(prefix));
+}
+
+function shortName(slice: ContextBarSlice) {
+  if (slice.kind === 'free') return 'Free';
+  if (slice.kind === 'buffer') return 'Buffer';
+  return SHORT_NAMES[knownIndex(slice)]?.[1] ?? slice.name.split(' ')[0] ?? slice.name;
+}
+
+// The bar's segments in order, each by its short name, neighbours of one name
+// (the system prompt and the system tools) drawn as one in the first one's
+// colour: the content in SHORT_NAMES' order with the last turn's growth carved
+// off its end, then the free space and the buffer.
+export function segments(rows: ContextBarBreakdown, growth: number | null): Segment[] {
+  const result: Segment[] = [];
+  const add = (slice: ContextBarSlice) => {
+    const name = shortName(slice);
+    const previous = result.at(-1);
+    if (previous?.name === name) previous.tokens += slice.tokens;
+    else result.push({ ...slice, name });
+  };
+  const rank = (slice: ContextBarSlice) => {
+    const index = knownIndex(slice);
+    return index < 0 ? SHORT_NAMES.length - 1.5 : index;
+  };
+  rows.slices
+    .filter(slice => slice.kind === 'used')
+    .sort((a, b) => rank(a) - rank(b))
+    .forEach(add);
+  const tail = result.at(-1);
+  if (tail !== undefined && growth !== null && growth > 0) {
+    const carved = Math.min(growth, tail.tokens);
+    tail.tokens -= carved;
+    result.push({
+      name: 'Turn',
+      tokens: carved,
+      color: LAST_TURN_COLORS.find(color => result.every(each => each.color !== color)) ?? LAST_TURN_COLORS[0]!,
+      kind: 'turn',
+    });
+  }
+  rows.slices.filter(slice => slice.kind === 'free').forEach(add);
+  rows.slices.filter(slice => slice.kind === 'buffer').forEach(add);
+  return result.filter(segment => segment.tokens > 0);
+}
+
+// Splits `cells` among the weights in proportion, by largest remainder, then
+// gives a cell to each required weight that rounded to none, taken from the
+// largest, so every kind of content in the window shows.
+export function allocate(weights: number[], cells: number, isRequired: boolean[]) {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  if (total <= 0 || cells <= 0) return weights.map(() => 0);
+  const exact = weights.map(weight => (weight / total) * cells);
+  const counts = exact.map(Math.floor);
+  let left = cells - counts.reduce((sum, count) => sum + count, 0);
+  const byRemainder = exact.map((value, index) => ({ index, remainder: value - Math.floor(value) }));
+  byRemainder.sort((a, b) => b.remainder - a.remainder);
+  for (const { index } of byRemainder) {
+    if (left <= 0) break;
+    counts[index]!++;
+    left--;
+  }
+  for (const [index, required] of isRequired.entries()) {
+    if (!required || counts[index]! > 0) continue;
+    const largest = counts.indexOf(Math.max(...counts));
+    if (counts[largest]! <= 1) break;
+    counts[largest]!--;
+    counts[index] = 1;
+  }
+  return counts;
+}
+
+const GLYPH: Record<Segment['kind'], string> = { used: '█', turn: '█', free: '░', buffer: '▒' };
+
+type LegendItem = { segment: Segment; label: string };
+
+// The legend that fits on one line of `columns`, labels two spaces apart: every
+// segment with its tokens; then by name alone; then as many names as fit.
+export function legend(parts: Segment[], columns: number): LegendItem[] {
+  const width = (items: LegendItem[]) => items.reduce((sum, item) => sum + item.label.length + 2, -2);
+  const full = parts.map(segment => ({ segment, label: `${segment.name} ${formatTokens(segment.tokens)}` }));
+  if (width(full) <= columns) return full;
+  const names = parts.map(segment => ({ segment, label: segment.name }));
+  let used = -2;
+  const fitting: LegendItem[] = [];
+  for (const item of names) {
+    used += item.label.length + 2;
+    if (used > columns) break;
+    fitting.push(item);
+  }
+  return fitting;
+}
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    await $.command.register({
+      name: TOOLS_PANE,
+      description: 'Show the largest tool results in the context',
+      immediate: true,
+    });
+    const result = await next(e);
+    await refresh($);
+    return result;
+  });
+
+  // A /clear starts the conversation over.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      await update($, breakdown, () => null);
+      await update($, measured, () => null);
+      await update($, cost, () => null);
+      await update($, turn, () => null);
+    }
+    return next(e);
+  });
+
+  registerTools(on);
+
+  on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('cost') && e.cost !== undefined) {
+      const usd = e.cost.usd;
+      await update($, cost, () => usd);
+    }
+    if (e.changed.includes('context')) {
+      await update($, measured, () => e.context.tokens ?? null);
+      await refresh($);
+    }
+    return next(e);
+  });
+
+  on('turn.start', async ($, e, next) => {
+    const [contextBefore, costBefore] = await Promise.all([read($, measured), read($, cost)]);
+    await update($, turn, () => ({ contextBefore, steps: [], compactedAt: null, costBefore, isRunning: true }));
+    return next(e);
+  });
+
+  on('turn.step', async function* ($, e, next) {
+    const result = yield* next(e);
+    if (e.agentId === undefined && result.usage !== null) {
+      const step: ContextBarStep = { context: inputSide(result.usage), output: result.usage.output_tokens };
+      await update($, turn, current => {
+        if (current === null) return current;
+        // The context only shrinks when a compaction runs mid-turn.
+        const previous = current.steps.at(-1)?.context ?? current.contextBefore;
+        const compactedAt = previous !== null && step.context < previous ? current.steps.length : current.compactedAt;
+        return { ...current, steps: [...current.steps, step], compactedAt };
+      });
+    }
+    return result;
+  });
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      await update($, turn, current => (current === null ? current : { ...current, isRunning: false }));
+    }
+    return next(e);
+  });
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const rows = await read($, breakdown);
+    if (e.props.hasSurvey || rows === null || rows.slices.length < 1) return next(e);
+    const [current, costNow] = await Promise.all([read($, turn), read($, cost)]);
+    const { Box, Text } = $.ui.resolve(e);
+
+    const used = rows.slices.filter(slice => slice.kind === 'used').reduce((sum, slice) => sum + slice.tokens, 0);
+    const percent = Math.round((used / Math.max(rows.window, 1)) * 100);
+    const summary = [
+      `${formatTokens(used)}/${formatTokens(rows.window)} (${percent}%)`,
+      costNow === null ? null : formatUsd(costNow),
+    ]
+      .filter(part => part !== null)
+      .join(' · ');
+
+    const parts = segments(rows, current === null ? null : turnGrowth(current));
+    // The bar fills the band beside its summary, down to a floor.
+    const cells = Math.max(e.props.bodyColumns - summary.length - 1, MIN_BAR_CELLS);
+    const counts = allocate(
+      parts.map(part => part.tokens),
+      cells,
+      parts.map(isContent),
+    );
+    const line = current === null ? null : turnLine(current, costNow);
+
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row">
+          <Box key="bar" flexDirection="row">
+            {parts.map((part, index) => {
+              if (counts[index]! < 1) return null;
+              const { color, isDim } = style(part);
+              return (
+                <Text color={color} dimColor={isDim}>
+                  {GLYPH[part.kind].repeat(counts[index]!)}
+                </Text>
+              );
+            })}
+          </Box>
+          <Text bold> {summary}</Text>
+        </Box>
+        <Box key="legend" flexDirection="row">
+          {legend(parts, e.props.bodyColumns).map(({ segment, label }, index) => {
+            const { color, isDim } = style(segment);
+            return (
+              <Text color={color} dimColor={isDim}>
+                {index === 0 ? '' : '  '}
+                {label}
+              </Text>
+            );
+          })}
+        </Box>
+        {line === null ? null : (
+          <Text dimColor wrap="truncate-end">
+            {line}
+          </Text>
+        )}
+      </Box>
+    );
+  });
+};

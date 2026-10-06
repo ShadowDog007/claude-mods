@@ -15,3 +15,4 @@ Then browse and install plugins with `/plugin`.
 | Plugin | Description |
 | --- | --- |
 | [idle-compact](plugins/idle-compact) | Runs `/compact` while the session sits idle waiting on background work, right before the prompt cache expires. |
+| [context-bar](plugins/context-bar) | A coloured bar above the prompt showing what fills the context window, by category, and how much the last turn and its steps added. |
