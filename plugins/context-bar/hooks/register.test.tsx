@@ -6,17 +6,14 @@ import {
   allocate,
   bar,
   barWidth,
-  fitMiddle,
   formatTokens,
-  keepLargest,
   legend,
   segments,
   stepGrowth,
-  toolResultLines,
-  toolTarget,
   turnGrowth,
   turnLine,
 } from './register';
+import { describe, fitMiddle, sizeBar, toolName, toolResults } from './tools';
 
 const WINDOW = 200_000;
 const SURFACES = ['terminal', 'desktop'] as const;
@@ -99,13 +96,11 @@ function engine(on: On) {
     },
   }));
   on('command.register', (_$, e) => ({ value: { command: e.name } }));
-  on('session.compact', (_$, e) => ({ messages: e.messages }));
-  // Every tool answers with as many characters as its `file_path` says.
-  on('tool.call', (_$, e) => {
-    const size = Number((e as { file_path?: string }).file_path?.match(/\d+/)?.[0] ?? 0);
-    return { result: {}, text: 'x'.repeat(size) };
-  });
-  // Every pane is placed; `opened` lists their ids.
+  // The conversation in API form, as `messages` holds it, in /repo.
+  const messages: { role: 'user' | 'assistant'; content: { type: string; [field: string]: unknown }[] }[] = [];
+  on('session.messages', () => ({ value: messages }));
+  on('session.cwd', () => ({ value: '/repo' }));
+  // Every pane is placed; `opened` lists them.
   const opened: { id: string; columns?: number }[] = [];
   on('ui.open', (_$, e) => {
     opened.push({ id: e.id, columns: e.columns });
@@ -129,7 +124,7 @@ function engine(on: On) {
       },
     };
   });
-  return { contexts, opened };
+  return { contexts, messages, opened };
 }
 
 async function measure($: Engine, tokens: number) {
@@ -340,28 +335,78 @@ test('yields the band to a survey', async ($, on) => {
   }
 });
 
-test('names what a tool was called on, on one line', () => {
-  expect(toolTarget({ file_path: 'src/a.ts', pattern: 'x' })).toBe('src/a.ts');
-  expect(toolTarget({ command: 'git\n  status' })).toBe('git status');
-  expect(toolTarget({ command: 'x'.repeat(1_000) })).toHaveLength(400);
-  expect(toolTarget({ other: 1 })).toBe('');
+test('forgets the conversation on /clear', async ($, on) => {
+  const { contexts } = engine(on);
+  await turn($, contexts, [41_000]);
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
+  const ui = await $.ui.mount(band('terminal'));
+  expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
+  await ui.unmount();
 });
 
-test('keeps the largest tool results, largest first', () => {
-  let list: ReturnType<typeof keepLargest> = [];
-  for (let tokens = 1; tokens <= 30; tokens++) list = keepLargest(list, { tool: 'Read', target: `${tokens}`, tokens });
-  expect(list).toHaveLength(20);
-  expect(list[0]!.tokens).toBe(30);
-  expect(list.at(-1)!.tokens).toBe(11);
+test('says what a tool call set out to do', () => {
+  expect(describe('Bash', { command: 'npm test -- --watch=false', description: 'Run the tests' }, '/repo')).toEqual({
+    title: 'Run the tests',
+    detail: 'npm test -- --watch=false',
+  });
+  expect(describe('Bash', { command: 'git\n  status' }, '/repo')).toEqual({ title: 'git status', detail: '' });
+  expect(describe('Read', { file_path: '/repo/src/engine.ts' }, '/repo')).toEqual({ title: 'engine.ts', detail: 'src' });
+  expect(describe('Edit', { file_path: 'C:\\Repo\\src\\a.ts' }, 'c:\\repo')).toEqual({ title: 'a.ts', detail: 'src' });
+  expect(describe('Grep', { pattern: 'session.compact', path: '/repo/types', glob: '*.ts' }, '/repo')).toEqual({
+    title: '"session.compact"',
+    detail: 'in types *.ts',
+  });
+  expect(describe('WebFetch', { url: 'https://example.com/docs', prompt: 'hooks' }, '/repo')).toEqual({
+    title: 'example.com/docs',
+    detail: 'hooks',
+  });
+  expect(describe('mcp__docs__read', {}, '/repo')).toEqual({ title: 'docs read', detail: '' });
+  expect(toolName('mcp__docs__read')).toBe('docs read');
 });
 
-test('shows the largest tool results in a pane on /context-tools, forgetting them at a compaction', async ($, on) => {
-  const { opened } = engine(on);
+test('pairs each tool result with its call, largest first', () => {
+  const results = toolResults([
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Read', input: { file_path: 'a.ts' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'x'.repeat(400) }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'b', name: 'Bash', input: { command: 'ls' } }] },
+    {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'b', is_error: true, content: [{ type: 'text', text: 'x'.repeat(4_000) }] }],
+    },
+  ]);
+  expect(results.map(each => [each.tool, each.tokens, each.isError])).toEqual([
+    ['Bash', 1_000, true],
+    ['Read', 100, false],
+  ]);
+});
+
+test('fits a target to its width by cutting its middle, and sizes a bar in eighths', () => {
+  expect(fitMiddle('src/engine.ts', 20)).toBe('src/engine.ts');
+  expect(fitMiddle('C:/Users/me/projects/app/src/engine.ts', 20)).toBe('C:/Users/m…engine.ts');
+  expect(sizeBar(100, 100)).toBe('██████████');
+  expect(sizeBar(55, 100)).toBe('█████▌    ');
+  expect(sizeBar(1, 100_000)).toBe('▏         ');
+});
+
+test('shows the tool results in a pane on /context-tools, a row expanding on a press', async ($, on) => {
+  const { messages, opened } = engine(on);
+  messages.push(
+    {
+      role: 'assistant',
+      content: [
+        { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/repo/src/small.ts' } },
+        { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'npm test', description: 'Run the tests' } },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 't1', content: 'x'.repeat(400) },
+        { type: 'tool_result', tool_use_id: 't2', content: `12 passed\n${'y'.repeat(20_000)}` },
+      ],
+    },
+  );
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
-  await $.tool.call({ tool: 'Read', file_path: 'small-400.ts' } as never);
-  await $.tool.call({ tool: 'Read', file_path: 'large-20000.ts' } as never);
-  // A subagent's result stays in its own context.
-  await $.tool.call({ tool: 'Read', file_path: 'agent-90000.ts', agentId: 'a1' } as never);
 
   // The command opens the pane and leaves the model nothing to read.
   const ran = await $.command.run({
@@ -373,44 +418,23 @@ test('shows the largest tool results in a pane on /context-tools, forgetting the
   expect(opened).toEqual([{ id: 'context-tools', columns: 160 }]);
   expect((ran as { text?: string }).text).toBe(undefined);
 
-  const pane = {
+  const ui = await $.ui.mount({
     plugin: 'context-bar',
-    surface: 'terminal' as const,
-    component: 'Pane' as const,
+    surface: 'terminal',
+    component: 'Pane',
     requestId: 'context-tools',
-    props: { title: 'Largest tool results', isFocused: true, bodyColumns: 60, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 20 }, view: {} },
-  };
-  let ui = await $.ui.mount(pane);
-  expect(await ui.find({ type: 'Text', text: '~5.0k  Read  large-20000.ts' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: ' ~100  Read  small-400.ts' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: /agent/ })).toBe(undefined);
-  await ui.unmount();
+    props: { title: 'Largest tool results', isFocused: true, bodyColumns: 100, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  });
+  expect(await ui.find({ type: 'Text', text: /^2 results · ~5\.1k of 34k in messages/ })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'Run the tests' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /npm test/ })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'small.ts' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: '12 passed' })).toBe(undefined);
 
-  // A precompute only prepares a summary; a compaction installs it.
-  const messages = [{ role: 'user' as const, text: 'Summary', toolUses: [] }];
-  await $.session.compact({ trigger: 'precompute', messages });
-  ui = await $.ui.mount(pane);
-  expect(await ui.find({ type: 'Text', text: /large-20000/ })).toBeDefined();
-  await ui.unmount();
-  await $.session.compact({ trigger: 'manual', messages });
-  ui = await $.ui.mount(pane);
-  expect(await ui.find({ type: 'Text', text: 'No tool results in the context yet.' })).toBeDefined();
-  await ui.unmount();
-});
-
-test('fits a target to its width by cutting its middle', () => {
-  expect(fitMiddle('src/engine.ts', 20)).toBe('src/engine.ts');
-  expect(fitMiddle('C:/Users/me/projects/app/src/engine.ts', 20)).toBe('C:/Users/m…engine.ts');
-  expect(toolResultLines([{ tool: 'Read', target: 'C:/Users/me/projects/app/src/engine.ts', tokens: 5_000 }], 30)).toEqual([
-    '~5.0k  Read  C:/Users…ngine.ts',
-  ]);
-});
-
-test('forgets the conversation on /clear', async ($, on) => {
-  const { contexts } = engine(on);
-  await turn($, contexts, [41_000]);
-  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
-  const ui = await $.ui.mount(band('terminal'));
-  expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
+  await ui.press({ key: 'tool-t2' });
+  expect(await ui.find({ type: 'Text', text: 'command: npm test' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: '12 passed' })).toBeDefined();
+  await ui.press({ key: 'tool-t2' });
+  expect(await ui.find({ type: 'Text', text: '12 passed' })).toBe(undefined);
   await ui.unmount();
 });

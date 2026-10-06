@@ -17,16 +17,26 @@ The band yields to a survey, and can be collapsed and restored like any band abo
 
 ## `/context-tools`
 
-Opens a pane, as wide as the terminal allows, listing the twenty largest tool results still in the context, each with its estimated tokens, the tool, and what it was called on. A long path or command is cut in the middle, so the file name stays in view:
+Opens a pane, as wide as the terminal allows, listing the twenty largest tool results in the context, each by what its call set out to do:
 
 ```
-Largest tool results in the context (estimated at 4 characters a token)
- ~12k  Bash  npm test
-~5.0k  Read  C:\Users\me\projects\app…\src\engine.ts
+Largest tool results in the context     54 results · ~31k of 101k in messages · 4 characters a token
+1: ▸  ~12k ██████████ Run plugin tests and type-check   claude plugin test plugins/context-bar   Bash
+2: ▾ ~5.0k ████▏      register.tsx                       plugins/context-bar/hooks                Read
+       file_path: S:\repo\plugins\context-bar\hooks\register.tsx
+       result
+       1  import { atom, read, update } from 'claude-code';
+       …
+3: ▸  ~725 ▋          "session.compact"                  in types *.ts                            Grep
 [ Close ]
 ```
 
-The pane is for you alone: nothing of it reaches the model. Escape, `q` or Close dismisses it. Only the main conversation's results are counted (a subagent's stay in its own context). The list clears at a compaction and at `/clear`. Sizes are estimated from each result's text at about four characters a token, so images are not counted.
+- A call the model described (`Bash`, `Agent`) goes by its description, the command dimmed after it. A file goes by its name, its folder relative to the project after it. A search goes by its pattern and where it looked, and a fetch by its address.
+- Click a row, or press its number, to expand it: the call's arguments and the first lines of its result. Press it again to fold it.
+- The header counts the results and their total against the messages' share of the window.
+- The pane is for you alone: nothing of it reaches the model. Escape, `q` or Close dismisses it.
+
+The list is read from the context as it stands when drawn, so it holds what a compaction kept and nothing it dropped, and is drawn again after every response. Sizes are estimated from each result's text at about four characters a token, so images are not counted.
 
 ## Notes
 

@@ -1,17 +1,16 @@
 import { atom, read, update } from 'claude-code';
 import type { EngineInterface, ModelUsage, Register } from 'claude-code';
 
-import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarToolResult, ContextBarTurn } from '../types';
+import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
+import { registerTools, TOOLS_PANE } from './tools';
 
-// The command, and the pane it opens, listing the largest tool results.
-const TOOLS_PANE = 'context-tools';
-const MAX_TOOL_RESULTS = 20;
-// A tool result's tokens, estimated from its text's length.
-const CHARS_PER_TOKEN = 4;
-// The arguments that say what a tool was called on, the first one present.
-const TARGET_KEYS = ['file_path', 'notebook_path', 'path', 'command', 'pattern', 'url', 'query', 'skill', 'description'];
-// The most of a target kept; the pane fits it to its width.
-const MAX_TARGET_LENGTH = 400;
+// Kept in the session's state, so a reload of the module draws at once rather
+// than waiting for the next response.
+const breakdown = atom({ plugin: 'context-bar', key: 'breakdown' } as const, null);
+const measured = atom({ plugin: 'context-bar', key: 'measured' } as const, null);
+const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
+// The /context-tools pane's, cleared with the rest.
+const expanded = atom({ plugin: 'context-bar', key: 'expandedTool' } as const, null);
 
 // The steps the turn line lists, newest last.
 const MAX_STEPS_SHOWN = 8;
@@ -31,13 +30,6 @@ const SHORT_NAMES: [prefix: string, name: string][] = [
   ['Memory', 'Memory'],
   ['Messages', 'Messages'],
 ];
-
-// Kept in the session's state, so a reload of the module draws at once rather
-// than waiting for the next response.
-const breakdown = atom({ plugin: 'context-bar', key: 'breakdown' } as const, null);
-const measured = atom({ plugin: 'context-bar', key: 'measured' } as const, null);
-const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
-const toolResults = atom({ plugin: 'context-bar', key: 'toolResults' } as const, []);
 
 // Re-estimates the window by category. `summary` counts locally and sends no
 // request, so it is cheap enough to run after every response.
@@ -116,43 +108,6 @@ export function turnLine(current: ContextBarTurn) {
   ]
     .filter(part => part !== null)
     .join(' · ');
-}
-
-// What a tool was called on, by its first argument of TARGET_KEYS, on one line.
-export function toolTarget(input: Record<string, unknown>) {
-  const value = TARGET_KEYS.map(key => input[key]).find(each => typeof each === 'string' && each.length > 0);
-  if (typeof value !== 'string') return '';
-  const line = value.replace(/\s+/g, ' ').trim();
-  return line.length > MAX_TARGET_LENGTH ? `${line.slice(0, MAX_TARGET_LENGTH - 1)}…` : line;
-}
-
-// `list` with `result` in its place, largest first, the smallest past the cap
-// dropped.
-export function keepLargest(list: readonly ContextBarToolResult[], result: ContextBarToolResult) {
-  const index = list.findIndex(each => each.tokens < result.tokens);
-  const next = index < 0 ? [...list, result] : [...list.slice(0, index), result, ...list.slice(index)];
-  return next.slice(0, MAX_TOOL_RESULTS);
-}
-
-// `text` in `width` cells, its middle cut where it is wider, so a path keeps
-// both its root and its file name.
-export function fitMiddle(text: string, width: number) {
-  if (text.length <= width) return text;
-  if (width < 2) return '…'.slice(0, width);
-  const head = Math.ceil((width - 1) / 2);
-  return `${text.slice(0, head)}…${text.slice(text.length - (width - 1 - head))}`;
-}
-
-// The pane's rows, one a tool result in `columns` cells: its size, the tool,
-// and what it was called on.
-export function toolResultLines(list: readonly ContextBarToolResult[], columns: number) {
-  const sizes = list.map(each => `~${formatTokens(each.tokens)}`);
-  const sizeWidth = Math.max(...sizes.map(size => size.length));
-  const toolWidth = Math.max(...list.map(each => each.tool.length));
-  return list.map((each, index) => {
-    const prefix = `${sizes[index]!.padStart(sizeWidth)}  ${each.tool.padEnd(toolWidth)}  `;
-    return `${prefix}${fitMiddle(each.target, columns - prefix.length)}`.trimEnd();
-  });
 }
 
 type Segment = { name: string; tokens: number; color: string; kind: ContextBarSlice['kind'] | 'turn' };
@@ -292,70 +247,12 @@ export const register: Register = on => {
       await update($, breakdown, () => null);
       await update($, measured, () => null);
       await update($, turn, () => null);
-      await update($, toolResults, () => []);
+      await update($, expanded, () => null);
     }
     return next(e);
   });
 
-  // A compaction replaces the tool results with its summary; a precompute only
-  // prepares one, and a skipped one keeps them.
-  on('session.compact', async ($, e, next) => {
-    const result = await next(e);
-    if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
-      await update($, toolResults, () => []);
-    }
-    return result;
-  });
-
-  // Subagents' results stay in their own context, so only the main loop's count.
-  on('tool.call', async ($, e, next) => {
-    const ran = await next(e);
-    if (e.agentId === undefined && ran.deny === undefined && ran.text !== undefined) {
-      const result: ContextBarToolResult = {
-        tool: e.tool,
-        target: toolTarget(e as unknown as Record<string, unknown>),
-        tokens: Math.ceil(ran.text.length / CHARS_PER_TOKEN),
-      };
-      await update($, toolResults, list => keepLargest(list, result));
-    }
-    return ran;
-  });
-
-  // Opens the list in a pane, for the person alone: no text, so nothing of it
-  // reaches the model. A one-off look, so docked it asks for the whole width.
-  on('command.run', { command: TOOLS_PANE }, async ($, e) => {
-    const rows = Math.max((await read($, toolResults)).length, 1) + 2;
-    await $.ui.open({
-      id: TOOLS_PANE,
-      title: 'Largest tool results',
-      focus: true,
-      closeOnEscape: true,
-      rows,
-      columns: e.presentation.columns,
-    });
-    return {};
-  });
-
-  on('ui.render', { component: 'Pane', requestId: TOOLS_PANE }, async ($, e) => {
-    const list = await read($, toolResults);
-    const { Box, Button, Text } = $.ui.resolve(e);
-    return (
-      <Box flexDirection="column">
-        <Text bold>
-          Largest tool results in the context{' '}
-          <Text dimColor>(estimated at {CHARS_PER_TOKEN} characters a token)</Text>
-        </Text>
-        {list.length < 1 ? (
-          <Text dimColor>No tool results in the context yet.</Text>
-        ) : (
-          toolResultLines(list, e.props.bodyColumns).map(line => <Text wrap="truncate-end">{line}</Text>)
-        )}
-        <Button key="close" role="dismiss" hotkey="q" onPress={() => void $.ui.close({ id: TOOLS_PANE })}>
-          Close
-        </Button>
-      </Box>
-    );
-  });
+  registerTools(on);
 
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('context')) {
