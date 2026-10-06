@@ -202,6 +202,8 @@ test('keeps the legend to one line, dropping tokens and then names', () => {
     })),
   };
   const parts = segments(rows, 12_500);
+  // Skills draws in the first colour the turn could; the turn takes the next.
+  expect(parts.find(part => part.name === 'Turn')?.color).toBe('suggestion');
   expect(legend(parts, 80).map(item => item.label)).toEqual([
     'System 20k',
     'MCP 4.0k',
@@ -215,8 +217,8 @@ test('keeps the legend to one line, dropping tokens and then names', () => {
   expect(legend(parts, 40).map(item => item.label)).toEqual(['System', 'MCP', 'Skills', 'Messages', 'Turn']);
 });
 
-test('caps the bar beside its summary', () => {
-  expect(barWidth(200, 14)).toBe(60);
+test('fills the band beside its summary, down to a floor', () => {
+  expect(barWidth(200, 14)).toBe(185);
   expect(barWidth(50, 14)).toBe(35);
   expect(barWidth(12, 14)).toBe(10);
 });
@@ -239,6 +241,8 @@ test('draws boundaries over content only, as one marker per cell, at a fixed wid
   const text = runs.map(run => run.text).join('');
   expect(text).toBe('████┃███││░░░░░░░░░░');
   expect(runs.length).toBeLessThanOrEqual(20);
+  // On the colour of the segment they mark, so it stays filled.
+  expect(runs.filter(run => run.text === '┃' || run.text === '││').map(run => run.background)).toEqual(['claude', 'claude']);
 });
 
 test('counts what a turn and each of its steps added', () => {
@@ -289,10 +293,10 @@ test('draws the bar, a legend by category, and the last turn', async ($, on) => 
     ).toBeDefined();
 
     // The turn starts at 40k of 200k, its later steps at 47k and 52k: cells
-    // 12, 14 and 15 of 60.
+    // 13, 15 and 16 of the 65 beside the summary.
     const drawn = (await ui.find({ key: 'bar' }))!.text;
-    expect(drawn.length).toBe(60);
-    expect([drawn[12], drawn[14], drawn[15]]).toEqual(['┃', '│', '│']);
+    expect(drawn.length).toBe(65);
+    expect([drawn[13], drawn[15], drawn[16]]).toEqual(['┃', '│', '│']);
     expect(drawn.split('').filter(cell => cell === '┃' || cell === '│')).toHaveLength(3);
     await ui.unmount();
   }

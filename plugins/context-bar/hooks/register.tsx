@@ -5,15 +5,15 @@ import type { ContextBarBreakdown, ContextBarMark, ContextBarSlice, ContextBarSt
 
 // The steps the turn line lists, newest last.
 const MAX_STEPS_SHOWN = 8;
-// The bar's widest, in cells; it is narrower where the band is.
-const MAX_BAR_CELLS = 60;
+// The bar's narrowest, in cells; otherwise it fills the band beside its summary.
 const MIN_BAR_CELLS = 10;
 // The turn and step boundaries kept, newest last; far more than a bar has cells.
 const MAX_MARKS = 500;
-// What the newest part of the conversation is drawn in, and the colour used
-// instead when the row it is carved from already draws in that one.
-const LAST_TURN_COLOR = 'warning';
-const LAST_TURN_FALLBACK_COLOR = 'success';
+// What the newest part of the conversation is drawn in: the first of these no
+// other segment draws in.
+const LAST_TURN_COLORS = ['warning', 'suggestion', 'success', 'permission'];
+// A boundary's line, drawn over its cell's colour so the segment stays filled.
+const MARK_COLOR = 'inverseText';
 
 // The short names for /context's rows, by the start of the row's name, in the
 // order the bar draws them; a row named otherwise goes by its first word, just
@@ -146,7 +146,7 @@ export function segments(rows: ContextBarBreakdown, growth: number | null): Segm
     result.push({
       name: 'Turn',
       tokens: carved,
-      color: tail.color === LAST_TURN_COLOR ? LAST_TURN_FALLBACK_COLOR : LAST_TURN_COLOR,
+      color: LAST_TURN_COLORS.find(color => result.every(each => each.color !== color)) ?? LAST_TURN_COLORS[0]!,
       kind: 'turn',
     });
   }
@@ -184,16 +184,17 @@ export function allocate(weights: number[], cells: number, isRequired: boolean[]
 // The width of the bar beside a summary `summaryWidth` wide, in a band
 // `columns` wide.
 export function barWidth(columns: number, summaryWidth: number) {
-  return Math.min(Math.max(columns - summaryWidth - 1, MIN_BAR_CELLS), MAX_BAR_CELLS);
+  return Math.max(columns - summaryWidth - 1, MIN_BAR_CELLS);
 }
 
 const GLYPH: Record<Segment['kind'], string> = { used: '█', turn: '█', free: '░', buffer: '▒' };
 const MARK_GLYPH: Record<ContextBarMark['kind'], string> = { turn: '┃', step: '│' };
 
-export type Run = { text: string; color: string | undefined; isDim: boolean };
+export type Run = { text: string; color: string | undefined; background: string | undefined; isDim: boolean };
 
 // The bar as runs of text: each segment's cells in its glyph, a turn's or a
-// step's boundary drawn over the content cell its tokens fall in. Boundaries
+// step's boundary drawn as a line on the colour of the content cell its tokens
+// fall in. Boundaries
 // in one cell draw as one, a turn's over a step's, so the bar is as wide as
 // the counts add up to whatever their number. Neighbouring cells of one style
 // are one run.
@@ -204,6 +205,7 @@ export function bar(parts: Segment[], counts: number[], boundaries: readonly Con
       cells.push({
         text: GLYPH[part.kind],
         color: part.kind === 'free' ? undefined : part.color,
+        background: undefined,
         isDim: part.kind === 'free',
         isContent: isContent(part),
       });
@@ -217,14 +219,14 @@ export function bar(parts: Segment[], counts: number[], boundaries: readonly Con
   }
   for (const [index, kind] of at) {
     const cell = cells[index]!;
-    if (cell.isContent) cells[index] = { ...cell, text: MARK_GLYPH[kind], isDim: kind === 'step' };
+    if (cell.isContent) cells[index] = { ...cell, text: MARK_GLYPH[kind], color: MARK_COLOR, background: cell.color };
   }
 
   const runs: Run[] = [];
-  for (const { text, color, isDim } of cells) {
+  for (const { text, color, background, isDim } of cells) {
     const last = runs.at(-1);
-    if (last !== undefined && last.color === color && last.isDim === isDim) last.text += text;
-    else runs.push({ text, color, isDim });
+    if (last !== undefined && last.color === color && last.background === background && last.isDim === isDim) last.text += text;
+    else runs.push({ text, color, background, isDim });
   }
   return runs;
 }
@@ -367,7 +369,7 @@ export const register: Register = on => {
         <Box flexDirection="row">
           <Box key="bar" flexDirection="row">
             {runs.map(run => (
-              <Text color={run.color} dimColor={run.isDim}>
+              <Text color={run.color} backgroundColor={run.background} dimColor={run.isDim}>
                 {run.text}
               </Text>
             ))}
