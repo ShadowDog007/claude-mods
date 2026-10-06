@@ -17,10 +17,10 @@ const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 // What an expanded row shows of its result.
 const PREVIEW_LINES = 8;
 // The arguments that say what an unknown tool was called on, the first present.
-const TARGET_KEYS = ['file_path', 'notebook_path', 'path', 'command', 'pattern', 'url', 'query', 'skill', 'description', 'prompt'];
+const TARGET_KEYS = ['path', 'command', 'pattern', 'url', 'query', 'skill', 'description', 'prompt'];
 
 // One tool result in the context: the call it answers and its estimated size.
-export type ToolResult = {
+type ToolResult = {
   id: string;
   tool: string;
   input: Record<string, unknown>;
@@ -90,7 +90,7 @@ function oneLine(value: unknown) {
 }
 
 // `path` relative to `cwd` when it lies inside it.
-export function relative(path: string, cwd: string) {
+function relative(path: string, cwd: string) {
   const norm = (each: string) => each.replace(/\\/g, '/').toLowerCase();
   const root = norm(cwd).replace(/\/$/, '');
   return norm(path).startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
@@ -102,7 +102,7 @@ function splitPath(path: string) {
 }
 
 // The tool's name for a row: an MCP tool by its server and tool.
-export function toolName(tool: string) {
+function toolName(tool: string) {
   const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
   return mcp === null ? tool : `${mcp[1]} ${mcp[2]}`;
 }
@@ -152,14 +152,21 @@ export function sizeBar(tokens: number, largest: number) {
   return `${'█'.repeat(Math.floor(eighths / 8))}${EIGHTHS[eighths % 8]}`.padEnd(BAR_CELLS);
 }
 
-export function formatSize(tokens: number) {
-  if (tokens < 1_000) return `~${tokens}`;
-  if (tokens < 10_000) return `~${(tokens / 1_000).toFixed(1)}k`;
-  return `~${Math.round(tokens / 1_000)}k`;
+export function formatTokens(tokens: number) {
+  const size = Math.abs(tokens);
+  if (size < 1_000) return String(Math.round(tokens));
+  if (size < 10_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  if (size < 1_000_000) return `${Math.round(tokens / 1_000)}k`;
+  return `${(tokens / 1_000_000).toFixed(1)}M`;
+}
+
+// A size estimated from characters.
+function estimate(tokens: number) {
+  return `~${formatTokens(tokens)}`;
 }
 
 // The arguments of a call, a key and its value each, as an expanded row lists them.
-export function argumentRows(input: Record<string, unknown>): [key: string, value: string][] {
+function argumentRows(input: Record<string, unknown>): [key: string, value: string][] {
   return Object.entries(input)
     .filter(([, value]) => value !== undefined && value !== '')
     .map(([key, value]) => [key, typeof value === 'string' ? oneLine(value) : JSON.stringify(value)]);
@@ -168,9 +175,9 @@ export function argumentRows(input: Record<string, unknown>): [key: string, valu
 const GAP = 2;
 const MIN_DETAIL = 12;
 
-// The table's column widths in `columns` cells, gaps excluded: the call takes
-// what its titles need up to half the room the fixed columns leave, the detail
-// the rest, and is dropped when too narrow to read.
+// The table's column widths in `columns` cells, a gap after each but the last:
+// the call takes what its titles need up to half the room the fixed columns
+// leave, the detail the rest, and is dropped when too narrow to read.
 export function tableColumns(columns: number, rows: { size: string; title: string; tool: string }[]) {
   const rank = String(rows.length).length;
   const size = Math.max(4, ...rows.map(row => row.size.length));
@@ -182,14 +189,14 @@ export function tableColumns(columns: number, rows: { size: string; title: strin
   let call = Math.min(titles, Math.max(Math.ceil(room / 2), 20));
   let detail = room - call - GAP;
   if (detail < MIN_DETAIL) {
-    call = Math.max(room, 4);
+    call = Math.max(room - GAP, 4);
     detail = 0;
   }
   return { rank, size, bar: BAR_CELLS, call, detail, tool };
 }
 
 // The first lines of a result, and how many more there are.
-export function preview(text: string) {
+function preview(text: string) {
   const lines = text.replace(/\s+$/, '').split('\n');
   return { lines: lines.slice(0, PREVIEW_LINES), more: Math.max(lines.length - PREVIEW_LINES, 0) };
 }
@@ -208,7 +215,8 @@ export function registerTools(on: On) {
       title: 'Largest tool results',
       focus: true,
       closeOnEscape: true,
-      rows: MAX_LISTED + 3,
+      // The rows, and the title, column header, rule, Close and the space between.
+      rows: MAX_LISTED + 6,
       // A one-off look, so docked it asks for the whole width.
       columns: e.presentation.columns,
     });
@@ -223,13 +231,13 @@ export function registerTools(on: On) {
       read($, expanded),
       messagesTokens($),
     ]);
-    const all = Array.isArray(messages) ? toolResults(messages as Message[]) : [];
-    const reminders = Array.isArray(messages) ? reminderTokens(messages as Message[]) : 0;
+    const all = toolResults(messages as Message[]);
+    const reminders = reminderTokens(messages as Message[]);
     const listed = all.slice(0, MAX_LISTED);
     const total = all.reduce((sum, each) => sum + each.tokens, 0);
     const rows = listed.map(each => ({
       result: each,
-      size: formatSize(each.tokens),
+      size: estimate(each.tokens),
       tool: toolName(each.tool),
       ...describe(each.tool, each.input, cwd),
     }));
@@ -244,8 +252,8 @@ export function registerTools(on: On) {
 
     const header = [
       `${listed.length < all.length ? `${listed.length} of ` : ''}${all.length} result${all.length === 1 ? '' : 's'}`,
-      `${formatSize(total)}${inMessages === null ? '' : ` of ${formatSize(inMessages).slice(1)} in messages`}`,
-      ...(reminders > 0 ? [`${formatSize(reminders)} in reminders`] : []),
+      `${estimate(total)}${inMessages === null ? '' : ` of ${formatTokens(inMessages)} in messages`}`,
+      ...(reminders > 0 ? [`${estimate(reminders)} in reminders`] : []),
       `${CHARS_PER_TOKEN} characters a token`,
     ].join(' · ');
 

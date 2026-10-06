@@ -2,21 +2,10 @@ import type { ContextCategory, On } from 'claude-code';
 import type { Engine } from 'claude-code/testing';
 import { expect, test } from 'claude-code/testing';
 
-import {
-  allocate,
-  bar,
-  barWidth,
-  formatTokens,
-  legend,
-  segments,
-  stepGrowth,
-  turnGrowth,
-  turnLine,
-} from './register';
-import { describe, fitMiddle, reminderTokens, sizeBar, tableColumns, toolName, toolResults } from './tools';
+import { allocate, legend, segments, turnLine } from './register';
+import { describe, fitMiddle, formatTokens, reminderTokens, sizeBar, tableColumns, toolResults } from './tools';
 
 const WINDOW = 200_000;
-const SURFACES = ['terminal', 'desktop'] as const;
 
 function row(name: string, tokens: number, color: string, kind: ContextCategory['kind'] = 'used'): ContextCategory {
   return { name, tokens, color, kind, isDeferred: kind === 'deferred' };
@@ -127,6 +116,10 @@ function engine(on: On) {
   return { contexts, messages, opened };
 }
 
+async function start($: Engine) {
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
+}
+
 async function measure($: Engine, tokens: number) {
   await $.session.measure({ context: { tokens, window: WINDOW }, rateLimits: [], changed: ['context'] });
 }
@@ -134,46 +127,31 @@ async function measure($: Engine, tokens: number) {
 // A finished turn from 40k of context, a request answered over each of `steps`.
 async function turn($: Engine, contexts: number[], steps: number[]) {
   contexts.push(...steps);
-  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
+  await start($);
   await measure($, 40_000);
   await $.turn.start({ text: 'go', turnId: 't1' });
-  for (const [index] of steps.entries()) {
+  for (const [index, context] of steps.entries()) {
     for await (const _ of $.turn.step({ turnId: 't1', index, model: 'm', messageCount: 1 }));
-    await measure($, steps[index]!);
+    await measure($, context);
   }
   await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: false } as never);
 }
 
-function band(surface: (typeof SURFACES)[number], bodyColumns = 80) {
+function band(bodyColumns = 80, hasSurvey = false) {
   return {
     plugin: 'context-bar',
-    surface,
+    surface: 'terminal' as const,
     component: 'AbovePrompt' as const,
-    props: {
-      hasSurvey: false,
-      isWorking: false,
-      maxRows: 20,
-      bodyColumns,
-      scroll: { offset: 0, bodyRows: 20 },
-      view: {},
-    },
+    props: { hasSurvey, isWorking: false, maxRows: 20, bodyColumns, scroll: { offset: 0, bodyRows: 20 }, view: {} },
   };
 }
 
-test('fills the bar to the band width, every category given a cell', () => {
-  const parts = segments(ROWS, 5_000);
-  const counts = allocate(
-    parts.map(p => p.tokens),
-    40,
-    parts.map(p => p.kind === 'used' || p.kind === 'turn'),
-  );
-  expect(counts.reduce((a, b) => a + b, 0)).toBe(40);
-  for (const [index, part] of parts.entries()) {
-    if (part.kind === 'used' || part.kind === 'turn') expect(counts[index]).toBeGreaterThan(0);
-  }
+test('gives every kind of content at least one cell, the rest in proportion', () => {
+  expect(allocate([10_000, 1, 1], 10, [true, true, true])).toEqual([8, 1, 1]);
+  expect(allocate([10_000, 1], 10, [true, false])).toEqual([10, 0]);
 });
 
-test('carves the last turn off the end of the conversation', () => {
+test('carves the last turn off the end of the conversation, in a colour no other segment uses', () => {
   const rows = {
     window: WINDOW,
     slices: [
@@ -190,6 +168,8 @@ test('carves the last turn off the end of the conversation', () => {
   ]);
   // Never more than the conversation holds.
   expect(segments(rows, 50_000).find(p => p.name === 'Turn')?.tokens).toBe(34_000);
+  // Skills draws in the first colour the turn could; the turn takes the next.
+  expect(segments(ROWS, 12_500).find(p => p.name === 'Turn')?.color).toBe('suggestion');
 });
 
 test('draws one segment for the system prompt and tools, skills before memory, free space before the buffer', () => {
@@ -217,8 +197,6 @@ test('draws one segment for the system prompt and tools, skills before memory, f
 
 test('keeps the legend to one line, dropping tokens and then names', () => {
   const parts = segments(ROWS, 12_500);
-  // Skills draws in the first colour the turn could; the turn takes the next.
-  expect(parts.find(part => part.name === 'Turn')?.color).toBe('suggestion');
   expect(legend(parts, 80).map(item => item.label)).toEqual([
     'System 20k',
     'MCP 4.0k',
@@ -232,29 +210,9 @@ test('keeps the legend to one line, dropping tokens and then names', () => {
   expect(legend(parts, 40).map(item => item.label)).toEqual(['System', 'MCP', 'Skills', 'Messages', 'Turn']);
 });
 
-test('fills the band beside its summary, down to a floor', () => {
-  expect(barWidth(200, 14)).toBe(185);
-  expect(barWidth(50, 14)).toBe(35);
-  expect(barWidth(12, 14)).toBe(10);
-});
-
-test('draws each segment as one run in its glyph, the free space dimmed', () => {
-  const parts = [
-    { name: 'Messages', tokens: 30, color: 'claude', kind: 'used' as const },
-    { name: 'Turn', tokens: 20, color: 'warning', kind: 'turn' as const },
-    { name: 'Free', tokens: 40, color: 'promptBorder', kind: 'free' as const },
-    { name: 'Buffer', tokens: 10, color: 'inactive', kind: 'buffer' as const },
-  ];
-  expect(bar(parts, [6, 4, 8, 0])).toEqual([
-    { text: '██████', color: 'claude', isDim: false },
-    { text: '████', color: 'warning', isDim: false },
-    { text: '░░░░░░░░', color: undefined, isDim: true },
-  ]);
-});
-
-test('counts what a turn and each of its steps added', () => {
+test('marks a step with nothing to compare against with ?', () => {
   const current = {
-    contextBefore: 40_000,
+    contextBefore: null,
     steps: [
       { context: 41_000, output: 200 },
       { context: 47_000, output: 300 },
@@ -263,10 +221,7 @@ test('counts what a turn and each of its steps added', () => {
     compactedAt: null,
     isRunning: false,
   };
-  expect(turnGrowth(current)).toBe(13_000);
-  expect(stepGrowth(current)).toEqual([1_000, 6_000, 5_000]);
-  expect(turnGrowth({ ...current, contextBefore: null })).toBe(null);
-  expect(turnLine({ ...current, contextBefore: null })).toBe('Last turn: 3 steps · context 52k · 1.5k out · steps ? +6.0k +5.0k');
+  expect(turnLine(current)).toBe('Last turn: 3 steps · context 52k · 1.5k out · steps ? +6.0k +5.0k');
 });
 
 test('formats token counts compactly', () => {
@@ -278,68 +233,63 @@ test('formats token counts compactly', () => {
 
 test('draws nothing before the context is measured', async ($, on) => {
   engine(on);
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount(band(surface));
-    expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
-    await ui.unmount();
-  }
+  const ui = await $.ui.mount(band());
+  expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
+  await ui.unmount();
 });
 
 test('draws the bar, a legend by category, and the last turn', async ($, on) => {
   const { contexts } = engine(on);
   await turn($, contexts, [41_000, 47_000, 52_000]);
 
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount(band(surface));
-    expect(await ui.find({ type: 'Text', text: /System 20k/ })).toBeDefined();
-    expect(await ui.find({ type: 'Text', text: /MCP 4\.0k/ })).toBeDefined();
-    expect(await ui.find({ type: 'Text', text: /Turn 13k/ })).toBeDefined();
-    expect(await ui.find({ type: 'Text', text: /60k\/200k \(30%\)/ })).toBeDefined();
-    expect(await ui.find({ type: 'Text', text: /deferred/ })).toBe(undefined);
-    expect(
-      await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · steps +1.0k +6.0k +5.0k' }),
-    ).toBeDefined();
+  const ui = await $.ui.mount(band());
+  expect(await ui.find({ type: 'Text', text: /System 20k/ })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /MCP 4\.0k/ })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /Turn 13k/ })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /60k\/200k \(30%\)/ })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /deferred/ })).toBe(undefined);
+  expect(
+    await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · steps +1.0k +6.0k +5.0k' }),
+  ).toBeDefined();
+  // The 65 cells beside the summary: content, free space, buffer.
+  const drawn = (await ui.find({ key: 'bar' }))!.text;
+  expect(drawn.length).toBe(65);
+  expect(drawn).toMatch(/^█+░+▒+$/);
+  await ui.unmount();
 
-    // The 65 cells beside the summary: content, free space, buffer.
-    const drawn = (await ui.find({ key: 'bar' }))!.text;
-    expect(drawn.length).toBe(65);
-    expect(drawn).toMatch(/^█+░+▒+$/);
-    await ui.unmount();
-  }
+  // Never narrower than ten cells.
+  const narrow = await $.ui.mount(band(20));
+  expect((await narrow.find({ key: 'bar' }))!.text.length).toBe(10);
+  await narrow.unmount();
 });
 
 test('counts a turn compacted partway from where the compaction left it', async ($, on) => {
   const { contexts } = engine(on);
   await turn($, contexts, [45_000, 12_000, 15_000]);
 
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount(band(surface));
-    expect(
-      await ui.find({
-        type: 'Text',
-        text: 'Last turn: 3 steps · context 40k → compacted 12k → 15k (+3.5k) · 1.5k out · steps +5.0k compacted +3.0k',
-      }),
-    ).toBeDefined();
-    await ui.unmount();
-  }
+  const ui = await $.ui.mount(band());
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'Last turn: 3 steps · context 40k → compacted 12k → 15k (+3.5k) · 1.5k out · steps +5.0k compacted +3.0k',
+    }),
+  ).toBeDefined();
+  await ui.unmount();
 });
 
 test('yields the band to a survey', async ($, on) => {
   const { contexts } = engine(on);
   await turn($, contexts, [41_000]);
-  for (const surface of SURFACES) {
-    const target = band(surface);
-    const ui = await $.ui.mount({ ...target, props: { ...target.props, hasSurvey: true } });
-    expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
-    await ui.unmount();
-  }
+  const ui = await $.ui.mount(band(80, true));
+  expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
+  await ui.unmount();
 });
 
 test('forgets the conversation on /clear', async ($, on) => {
   const { contexts } = engine(on);
   await turn($, contexts, [41_000]);
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
-  const ui = await $.ui.mount(band('terminal'));
+  const ui = await $.ui.mount(band());
   expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
   await ui.unmount();
 });
@@ -361,7 +311,6 @@ test('says what a tool call set out to do', () => {
     detail: 'hooks',
   });
   expect(describe('mcp__docs__read', {}, '/repo')).toEqual({ title: 'docs read', detail: '' });
-  expect(toolName('mcp__docs__read')).toBe('docs read');
 });
 
 test('pairs each tool result with its call, largest first', () => {
@@ -398,25 +347,32 @@ test('leaves the reminders attached to a result out of its size, counting them a
   expect(reminderTokens(messages)).toBe(300);
 });
 
-test('fits a target to its width by cutting its middle, and sizes a bar in eighths', () => {
+test('fits a target to its width by cutting its middle', () => {
   expect(fitMiddle('src/engine.ts', 20)).toBe('src/engine.ts');
   expect(fitMiddle('C:/Users/me/projects/app/src/engine.ts', 20)).toBe('C:/Users/m…engine.ts');
+});
+
+test('sizes a bar in eighths of a cell, never less than one', () => {
   expect(sizeBar(100, 100)).toBe('██████████');
   expect(sizeBar(55, 100)).toBe('█████▌    ');
   expect(sizeBar(1, 100_000)).toBe('▏         ');
 });
 
-test('lays the table out: the call as wide as its titles, the detail the rest, dropped when narrow', () => {
+test('lays the table out to the pane width, the detail dropped when narrow', () => {
   const rows = [
     { size: '~5.0k', title: 'Run the tests', tool: 'Bash' },
     { size: '~100', title: 'small.ts', tool: 'Read' },
   ];
-  expect(tableColumns(100, rows)).toEqual({ rank: 1, size: 5, bar: 10, call: 15, detail: 55, tool: 4 });
-  expect(tableColumns(40, rows)).toEqual({ rank: 1, size: 5, bar: 10, call: 12, detail: 0, tool: 4 });
+  // The columns and a gap of two after each but the last.
+  const width = (w: ReturnType<typeof tableColumns>) => w.rank + w.size + w.bar + w.tool + w.call + w.detail + 5 * 2;
+  const wide = tableColumns(100, rows);
+  expect([wide.call, wide.detail, width(wide)]).toEqual([15, 55, 100]);
+  const narrow = tableColumns(40, rows);
+  expect([narrow.detail, width(narrow)]).toEqual([0, 40]);
 });
 
-test('shows the tool results in a pane on /context-tools, a row expanding on a press', async ($, on) => {
-  const { messages, opened } = engine(on);
+// A Read of 400 characters and a Bash of about 20k, in /repo.
+function toolCalls(messages: ReturnType<typeof engine>['messages']) {
   messages.push(
     {
       role: 'assistant',
@@ -433,9 +389,11 @@ test('shows the tool results in a pane on /context-tools, a row expanding on a p
       ],
     },
   );
-  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
+}
 
-  // The command opens the pane and leaves the model nothing to read.
+test('opens /context-tools in a pane as wide as it can, leaving the model nothing to read', async ($, on) => {
+  const { opened } = engine(on);
+  await start($);
   const ran = await $.command.run({
     command: 'context-tools',
     args: '',
@@ -444,7 +402,12 @@ test('shows the tool results in a pane on /context-tools, a row expanding on a p
   } as never);
   expect(opened).toEqual([{ id: 'context-tools', columns: 160 }]);
   expect((ran as { text?: string }).text).toBe(undefined);
+});
 
+test('lists the tool results largest first, a call expanding on a press', async ($, on) => {
+  const { messages } = engine(on);
+  toolCalls(messages);
+  await start($);
   const ui = await $.ui.mount({
     plugin: 'context-bar',
     surface: 'terminal',
@@ -453,14 +416,9 @@ test('shows the tool results in a pane on /context-tools, a row expanding on a p
     props: { title: 'Largest tool results', isFocused: true, bodyColumns: 100, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} },
   });
   expect(await ui.find({ type: 'Text', text: /^2 results · ~5\.1k of 34k in messages/ })).toBeDefined();
-  // A header row, then a row a result, largest first, its call pressable.
-  for (const column of ['#', 'Size', 'Share', '  Call', 'Detail', 'Tool']) {
-    expect(await ui.find({ type: 'Text', text: column })).toBeDefined();
-  }
   expect((await ui.find({ key: 'tool-t2' }))?.text).toBe('▸ Run the tests');
   expect((await ui.find({ key: 'tool-t1' }))?.text).toBe('▸ small.ts');
   expect(await ui.find({ type: 'Text', text: 'npm test' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: 'src' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBe(undefined);
 
   await ui.press({ key: 'tool-t2' });

@@ -8,7 +8,7 @@ System 20k  MCP 4.0k  Skills 2.0k  Messages 22k  Turn 13k  Free 107k  Buffer 33k
 Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · steps +1.0k +6.0k +5.0k
 ```
 
-- **The bar** fills the band, with the total in use against the window at its end. Content is drawn in the colours `/context` uses: system prompt and tools, MCP tools, custom agents, skills, memory files, then messages. After the content come the free space (shaded) and the autocompact buffer. Every category in use gets at least one cell, however small.
+- **The bar** fills the band, with the total in use against the window at its end. Content is drawn in the colours `/context` uses: system prompt and tools, MCP tools, custom agents, skills, memory files, then messages. After the content come the free space (shaded) and the autocompact buffer. Every category in use gets at least one cell, however small, where the bar has room.
 - **The last turn** is carved off the end of the messages in a colour no other segment uses, so you can see how much of the window the latest turn took.
 - **The legend** names each segment, in its colour, with its tokens. When the line is too narrow it drops the token counts, then the trailing names, so it never wraps.
 - **The turn line** shows the current turn while it runs (`This turn`) and the previous one after it ends (`Last turn`): how many model requests it made, the context it started from and reached, the tokens it generated, and what each of its last eight steps added. When a compaction runs partway through a turn, the line shows where it left the context (`context 166k → compacted 34k → 37k`) and counts the turn's growth from there.
@@ -20,7 +20,7 @@ The band yields to a survey, and can be collapsed and restored like any band abo
 Opens a pane, as wide as the terminal allows, with a table of the twenty largest tool results in the context, each by what its call set out to do:
 
 ```
-Largest tool results in the context     54 results · ~31k of 101k in messages · 4 characters a token
+Largest tool results in the context     20 of 54 results · ~31k of 101k in messages · ~9.2k in reminders · 4 characters a token
 
  #   Size  Share       Tool  Call                                Detail
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────

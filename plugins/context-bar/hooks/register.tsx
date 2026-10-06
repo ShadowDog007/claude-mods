@@ -2,15 +2,13 @@ import { atom, read, update } from 'claude-code';
 import type { EngineInterface, ModelUsage, Register } from 'claude-code';
 
 import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
-import { registerTools, TOOLS_PANE } from './tools';
+import { formatTokens, registerTools, TOOLS_PANE } from './tools';
 
 // Kept in the session's state, so a reload of the module draws at once rather
 // than waiting for the next response.
 const breakdown = atom({ plugin: 'context-bar', key: 'breakdown' } as const, null);
 const measured = atom({ plugin: 'context-bar', key: 'measured' } as const, null);
 const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
-// The /context-tools pane's, cleared with the rest.
-const expanded = atom({ plugin: 'context-bar', key: 'expandedTool' } as const, null);
 
 // The steps the turn line lists, newest last.
 const MAX_STEPS_SHOWN = 8;
@@ -54,7 +52,7 @@ function inputSide(usage: ModelUsage) {
 // What the turn has added to the context so far, from where it started (or
 // where a compaction within it left the context) to its latest request, that
 // request's own output included, since the next one carries it.
-export function turnGrowth(current: ContextBarTurn) {
+function turnGrowth(current: ContextBarTurn) {
   const last = current.steps.at(-1);
   const start = current.compactedAt === null ? current.contextBefore : current.steps[current.compactedAt]!.context;
   if (last === undefined || start === null) return null;
@@ -64,20 +62,12 @@ export function turnGrowth(current: ContextBarTurn) {
 // What each step added over the one before it (the first over the turn's
 // start): 'compacted' for the step a compaction shrank, null where there is
 // nothing to compare against.
-export function stepGrowth(current: ContextBarTurn) {
+function stepGrowth(current: ContextBarTurn) {
   return current.steps.map((step, index) => {
     if (index === current.compactedAt) return 'compacted';
     const before = index === 0 ? current.contextBefore : current.steps[index - 1]!.context;
     return before === null ? null : step.context - before;
   });
-}
-
-export function formatTokens(tokens: number) {
-  const size = Math.abs(tokens);
-  if (size < 1_000) return String(Math.round(tokens));
-  if (size < 10_000) return `${(tokens / 1_000).toFixed(1)}k`;
-  if (size < 1_000_000) return `${Math.round(tokens / 1_000)}k`;
-  return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 
 function signed(tokens: number) {
@@ -125,7 +115,7 @@ function knownIndex(slice: ContextBarSlice) {
   return SHORT_NAMES.findIndex(([prefix]) => slice.name.startsWith(prefix));
 }
 
-export function shortName(slice: ContextBarSlice) {
+function shortName(slice: ContextBarSlice) {
   if (slice.kind === 'free') return 'Free';
   if (slice.kind === 'buffer') return 'Buffer';
   return SHORT_NAMES[knownIndex(slice)]?.[1] ?? slice.name.split(' ')[0] ?? slice.name;
@@ -184,7 +174,7 @@ export function allocate(weights: number[], cells: number, isRequired: boolean[]
     left--;
   }
   for (const [index, required] of isRequired.entries()) {
-    if (!required || counts[index]! > 0 || weights[index]! <= 0) continue;
+    if (!required || counts[index]! > 0) continue;
     const largest = counts.indexOf(Math.max(...counts));
     if (counts[largest]! <= 1) break;
     counts[largest]!--;
@@ -193,22 +183,7 @@ export function allocate(weights: number[], cells: number, isRequired: boolean[]
   return counts;
 }
 
-// The width of the bar beside a summary `summaryWidth` wide, in a band
-// `columns` wide.
-export function barWidth(columns: number, summaryWidth: number) {
-  return Math.max(columns - summaryWidth - 1, MIN_BAR_CELLS);
-}
-
 const GLYPH: Record<Segment['kind'], string> = { used: '█', turn: '█', free: '░', buffer: '▒' };
-
-export type Run = { text: string; color: string | undefined; isDim: boolean };
-
-// The bar as runs of text, one per segment drawn: its cells in its glyph.
-export function bar(parts: Segment[], counts: number[]): Run[] {
-  return parts
-    .map((part, index) => ({ text: GLYPH[part.kind].repeat(counts[index]!), ...style(part) }))
-    .filter(run => run.text.length > 0);
-}
 
 type LegendItem = { segment: Segment; label: string };
 
@@ -247,7 +222,6 @@ export const register: Register = on => {
       await update($, breakdown, () => null);
       await update($, measured, () => null);
       await update($, turn, () => null);
-      await update($, expanded, () => null);
     }
     return next(e);
   });
@@ -301,9 +275,11 @@ export const register: Register = on => {
     const summary = `${formatTokens(used)}/${formatTokens(rows.window)} (${percent}%)`;
 
     const parts = segments(rows, current === null ? null : turnGrowth(current));
+    // The bar fills the band beside its summary, down to a floor.
+    const cells = Math.max(e.props.bodyColumns - summary.length - 1, MIN_BAR_CELLS);
     const counts = allocate(
       parts.map(part => part.tokens),
-      barWidth(e.props.bodyColumns, summary.length),
+      cells,
       parts.map(isContent),
     );
     const line = current === null ? null : turnLine(current);
@@ -312,11 +288,15 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Box flexDirection="row">
           <Box key="bar" flexDirection="row">
-            {bar(parts, counts).map(run => (
-              <Text color={run.color} dimColor={run.isDim}>
-                {run.text}
-              </Text>
-            ))}
+            {parts.map((part, index) => {
+              if (counts[index]! < 1) return null;
+              const { color, isDim } = style(part);
+              return (
+                <Text color={color} dimColor={isDim}>
+                  {GLYPH[part.kind].repeat(counts[index]!)}
+                </Text>
+              );
+            })}
           </Box>
           <Text bold> {summary}</Text>
         </Box>
