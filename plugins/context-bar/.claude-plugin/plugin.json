@@ -1,0 +1,7 @@
+{
+  "name": "context-bar",
+  "version": "0.1.0",
+  "description": "A coloured bar above the prompt showing what fills the context window, by category, and how much the last turn and its steps added.",
+  "author": { "name": "Michael McKnight" },
+  "types": "./types/index.d.ts"
+}
