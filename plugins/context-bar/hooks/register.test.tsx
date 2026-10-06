@@ -2,7 +2,7 @@ import type { ContextCategory, On } from 'claude-code';
 import type { Engine } from 'claude-code/testing';
 import { expect, test } from 'claude-code/testing';
 
-import { allocate, formatTokens, segments, stepGrowth, turnGrowth } from './register';
+import { allocate, bar, barWidth, formatTokens, legend, segments, stepGrowth, turnGrowth } from './register';
 
 const WINDOW = 200_000;
 const SURFACES = ['terminal', 'desktop'] as const;
@@ -159,13 +159,86 @@ test('carves the last turn off the end of the conversation', () => {
     ],
   };
   expect(segments(rows, 10_000).map(p => [p.name, p.tokens])).toEqual([
-    ['System prompt', 3_000],
+    ['System', 3_000],
     ['Messages', 24_000],
-    ['Last turn', 10_000],
-    ['Free space', 163_000],
+    ['Turn', 10_000],
+    ['Free', 163_000],
   ]);
   // Never more than the conversation holds.
-  expect(segments(rows, 50_000).find(p => p.name === 'Last turn')?.tokens).toBe(34_000);
+  expect(segments(rows, 50_000).find(p => p.name === 'Turn')?.tokens).toBe(34_000);
+});
+
+test('draws one segment for the system prompt and tools, skills before memory, free space before the buffer', () => {
+  const rows = {
+    window: WINDOW,
+    slices: [
+      { name: 'System prompt', tokens: 3_000, color: 'promptBorder', kind: 'used' as const },
+      { name: 'System tools', tokens: 17_000, color: 'inactive', kind: 'used' as const },
+      { name: 'Custom agents', tokens: 1_000, color: 'permission', kind: 'used' as const },
+      { name: 'Memory files', tokens: 500, color: 'claude', kind: 'used' as const },
+      { name: 'Skills', tokens: 2_000, color: 'warning', kind: 'used' as const },
+      { name: 'Autocompact buffer', tokens: 33_000, color: 'inactive', kind: 'buffer' as const },
+      { name: 'Free space', tokens: 146_000, color: 'promptBorder', kind: 'free' as const },
+    ],
+  };
+  expect(segments(rows, null).map(p => [p.name, p.tokens, p.color])).toEqual([
+    ['System', 20_000, 'promptBorder'],
+    ['Agents', 1_000, 'permission'],
+    ['Skills', 2_000, 'warning'],
+    ['Memory', 500, 'claude'],
+    ['Free', 146_000, 'promptBorder'],
+    ['Buffer', 33_000, 'inactive'],
+  ]);
+});
+
+test('keeps the legend to one line, dropping tokens and then names', () => {
+  const rows = {
+    window: WINDOW,
+    slices: CATEGORIES.filter(c => c.kind !== 'deferred').map(({ name, tokens, color, kind }) => ({
+      name,
+      tokens,
+      color,
+      kind: kind as 'used' | 'free' | 'buffer',
+    })),
+  };
+  const parts = segments(rows, 12_500);
+  expect(legend(parts, 80).map(item => item.label)).toEqual([
+    'System 20k',
+    'MCP 4.0k',
+    'Skills 2.0k',
+    'Messages 22k',
+    'Turn 13k',
+    'Free 107k',
+    'Buffer 33k',
+  ]);
+  expect(legend(parts, 60).map(item => item.label)).toEqual(['System', 'MCP', 'Skills', 'Messages', 'Turn', 'Free', 'Buffer']);
+  expect(legend(parts, 40).map(item => item.label)).toEqual(['System', 'MCP', 'Skills', 'Messages', 'Turn']);
+});
+
+test('caps the bar beside its summary', () => {
+  expect(barWidth(200, 14)).toBe(60);
+  expect(barWidth(50, 14)).toBe(35);
+  expect(barWidth(12, 14)).toBe(10);
+});
+
+test('draws boundaries over content only, as one marker per cell, at a fixed width', () => {
+  const parts = [
+    { name: 'Messages', tokens: 50, color: 'claude', kind: 'used' as const },
+    { name: 'Free', tokens: 50, color: 'promptBorder', kind: 'free' as const },
+  ];
+  const marks = [
+    { tokens: 20, kind: 'step' as const },
+    { tokens: 21, kind: 'turn' as const },
+    { tokens: 22, kind: 'step' as const },
+    { tokens: 40, kind: 'step' as const },
+    // In the free space: not drawn.
+    { tokens: 70, kind: 'turn' as const },
+    ...Array.from({ length: 400 }, (_, index) => ({ tokens: 41 + (index % 9), kind: 'step' as const })),
+  ];
+  const runs = bar(parts, [10, 10], marks);
+  const text = runs.map(run => run.text).join('');
+  expect(text).toBe('████┃███││░░░░░░░░░░');
+  expect(runs.length).toBeLessThanOrEqual(20);
 });
 
 test('counts what a turn and each of its steps added', () => {
@@ -194,7 +267,7 @@ test('draws nothing before the context is measured', async ($, on) => {
   engine(on);
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(band(surface));
-    expect(await ui.find({ type: 'Text', text: /System prompt/ })).toBe(undefined);
+    expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
     await ui.unmount();
   }
 });
@@ -205,16 +278,21 @@ test('draws the bar, a legend by category, and the last turn', async ($, on) => 
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(band(surface));
-    expect(await ui.find({ type: 'Text', text: /System tools 17k/ })).toBeDefined();
-    expect(await ui.find({ type: 'Text', text: /MCP tools 4\.0k/ })).toBeDefined();
-    expect(await ui.find({ type: 'Text', text: /Last turn 13k/ })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: /System 20k/ })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: /MCP 4\.0k/ })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: /Turn 13k/ })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: /60k\/200k \(30%\)/ })).toBeDefined();
     expect(await ui.find({ type: 'Text', text: /deferred/ })).toBe(undefined);
     expect(
       await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · steps +1.0k +6.0k +5.0k' }),
     ).toBeDefined();
 
-    const bar = (await ui.find({ key: 'bar' }))!;
-    expect(bar.text.length).toBe(80);
+    // The turn starts at 40k of 200k, its later steps at 47k and 52k: cells
+    // 12, 14 and 15 of 60.
+    const drawn = (await ui.find({ key: 'bar' }))!.text;
+    expect(drawn.length).toBe(60);
+    expect([drawn[12], drawn[14], drawn[15]]).toEqual(['┃', '│', '│']);
+    expect(drawn.split('').filter(cell => cell === '┃' || cell === '│')).toHaveLength(3);
     await ui.unmount();
   }
 });
@@ -225,7 +303,7 @@ test('yields the band to a survey', async ($, on) => {
   for (const surface of SURFACES) {
     const target = band(surface);
     const ui = await $.ui.mount({ ...target, props: { ...target.props, hasSurvey: true } });
-    expect(await ui.find({ type: 'Text', text: /System prompt/ })).toBe(undefined);
+    expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
     await ui.unmount();
   }
 });
@@ -235,6 +313,6 @@ test('forgets the conversation on /clear', async ($, on) => {
   await turn($, contexts, [41_000]);
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
   const ui = await $.ui.mount(band('terminal'));
-  expect(await ui.find({ type: 'Text', text: /System prompt/ })).toBe(undefined);
+  expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
   await ui.unmount();
 });
