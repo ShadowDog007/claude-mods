@@ -29,6 +29,8 @@ export type ContextBarTurn = {
   // The first step after a compaction within the turn, if one ran: the
   // turn's growth is counted from there instead.
   compactedAt: number | null;
+  // The session's cost when the turn started, in US dollars; null when unknown.
+  costBefore: number | null;
   isRunning: boolean;
 };
 
@@ -38,6 +40,8 @@ declare module 'claude-code' {
       breakdown: ContextBarBreakdown | null;
       // The input side of the last response, as the status line reports it.
       measured: number | null;
+      // What the session has cost so far, in US dollars, as /cost totals it.
+      cost: number | null;
       turn: ContextBarTurn | null;
       // The /context-tools row expanded, by its call's id.
       expandedTool: string | null;

@@ -34,9 +34,10 @@ const ROWS = {
 };
 
 // Stands in for the engine beneath the plugin: a session whose context breaks
-// down as `CATEGORIES`, and a model whose every request is answered over the
-// next of `contexts` tokens of input.
+// down as `CATEGORIES` and has cost `ledger.usd`, and a model whose every
+// request is answered over the next of `contexts` tokens of input.
 function engine(on: On) {
+  const ledger = { usd: 1 };
   const state = new Map<string, { value: unknown; version: number }>();
   on('state.get', (_$, e) => {
     const entry = state.get(e.key);
@@ -62,6 +63,7 @@ function engine(on: On) {
     value: {
       startedAt: 0,
       rateLimits: [],
+      cost: { usd: ledger.usd },
       context: {
         tokens: 60_000,
         window: WINDOW,
@@ -113,26 +115,33 @@ function engine(on: On) {
       },
     };
   });
-  return { contexts, messages, opened };
+  return { contexts, ledger, messages, opened };
 }
 
 async function start($: Engine) {
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
 }
 
-async function measure($: Engine, tokens: number) {
-  await $.session.measure({ context: { tokens, window: WINDOW }, rateLimits: [], changed: ['context'] });
+async function measure($: Engine, tokens: number, usd: number) {
+  await $.session.measure({
+    context: { tokens, window: WINDOW },
+    rateLimits: [],
+    cost: { usd },
+    changed: ['context', 'cost'],
+  });
 }
 
-// A finished turn from 40k of context, a request answered over each of `steps`.
-async function turn($: Engine, contexts: number[], steps: number[]) {
+// A finished turn from 40k of context and $1.00, a request answered over each
+// of `steps`, and costing $0.10.
+async function turn($: Engine, { contexts, ledger }: ReturnType<typeof engine>, steps: number[]) {
   contexts.push(...steps);
   await start($);
-  await measure($, 40_000);
+  await measure($, 40_000, ledger.usd);
   await $.turn.start({ text: 'go', turnId: 't1' });
   for (const [index, context] of steps.entries()) {
     for await (const _ of $.turn.step({ turnId: 't1', index, model: 'm', messageCount: 1 }));
-    await measure($, context);
+    ledger.usd += 0.1;
+    await measure($, context, ledger.usd);
   }
   await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: false } as never);
 }
@@ -219,9 +228,10 @@ test('marks a step with nothing to compare against with ?', () => {
       { context: 52_000, output: 1_000 },
     ],
     compactedAt: null,
+    costBefore: null,
     isRunning: false,
   };
-  expect(turnLine(current)).toBe('Last turn: 3 steps · context 52k · 1.5k out · steps ? +6.0k +5.0k');
+  expect(turnLine(current, null)).toBe('Last turn: 3 steps · context 52k · 1.5k out · steps ? +6.0k +5.0k');
 });
 
 test('formats token counts compactly', () => {
@@ -239,21 +249,21 @@ test('draws nothing before the context is measured', async ($, on) => {
 });
 
 test('draws the bar, a legend by category, and the last turn', async ($, on) => {
-  const { contexts } = engine(on);
-  await turn($, contexts, [41_000, 47_000, 52_000]);
+  const stub = engine(on);
+  await turn($, stub, [41_000, 47_000, 52_000]);
 
   const ui = await $.ui.mount(band());
   expect(await ui.find({ type: 'Text', text: /System 20k/ })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /MCP 4\.0k/ })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /Turn 13k/ })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: /60k\/200k \(30%\)/ })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /60k\/200k \(30%\) · \$1\.30/ })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /deferred/ })).toBe(undefined);
   expect(
-    await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · steps +1.0k +6.0k +5.0k' }),
+    await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · $0.30 · steps +1.0k +6.0k +5.0k' }),
   ).toBeDefined();
-  // The 65 cells beside the summary: content, free space, buffer.
+  // The 57 cells beside the summary: content, free space, buffer.
   const drawn = (await ui.find({ key: 'bar' }))!.text;
-  expect(drawn.length).toBe(65);
+  expect(drawn.length).toBe(57);
   expect(drawn).toMatch(/^█+░+▒+$/);
   await ui.unmount();
 
@@ -264,30 +274,30 @@ test('draws the bar, a legend by category, and the last turn', async ($, on) => 
 });
 
 test('counts a turn compacted partway from where the compaction left it', async ($, on) => {
-  const { contexts } = engine(on);
-  await turn($, contexts, [45_000, 12_000, 15_000]);
+  const stub = engine(on);
+  await turn($, stub, [45_000, 12_000, 15_000]);
 
   const ui = await $.ui.mount(band());
   expect(
     await ui.find({
       type: 'Text',
-      text: 'Last turn: 3 steps · context 40k → compacted 12k → 15k (+3.5k) · 1.5k out · steps +5.0k compacted +3.0k',
+      text: 'Last turn: 3 steps · context 40k → compacted 12k → 15k (+3.5k) · 1.5k out · $0.30 · steps +5.0k compacted +3.0k',
     }),
   ).toBeDefined();
   await ui.unmount();
 });
 
 test('yields the band to a survey', async ($, on) => {
-  const { contexts } = engine(on);
-  await turn($, contexts, [41_000]);
+  const stub = engine(on);
+  await turn($, stub, [41_000]);
   const ui = await $.ui.mount(band(80, true));
   expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
   await ui.unmount();
 });
 
 test('forgets the conversation on /clear', async ($, on) => {
-  const { contexts } = engine(on);
-  await turn($, contexts, [41_000]);
+  const stub = engine(on);
+  await turn($, stub, [41_000]);
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
   const ui = await $.ui.mount(band());
   expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);

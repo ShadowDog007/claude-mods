@@ -8,6 +8,7 @@ import { formatTokens, registerTools, TOOLS_PANE } from './tools';
 // than waiting for the next response.
 const breakdown = atom({ plugin: 'context-bar', key: 'breakdown' } as const, null);
 const measured = atom({ plugin: 'context-bar', key: 'measured' } as const, null);
+const cost = atom({ plugin: 'context-bar', key: 'cost' } as const, null);
 const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
 
 // The steps the turn line lists, newest last.
@@ -33,7 +34,9 @@ const SHORT_NAMES: [prefix: string, name: string][] = [
 // request, so it is cheap enough to run after every response.
 async function refresh($: EngineInterface) {
   try {
-    const rows = (await $.session.usage({ breakdown: 'summary' })).context.breakdown;
+    const usage = await $.session.usage({ breakdown: 'summary' });
+    await update($, cost, () => usage.cost?.usd ?? null);
+    const rows = usage.context.breakdown;
     if (rows === undefined) return;
     const slices: ContextBarSlice[] = [];
     for (const { name, tokens, color, kind } of rows.categories) {
@@ -74,9 +77,14 @@ function signed(tokens: number) {
   return `${tokens < 0 ? '-' : '+'}${formatTokens(Math.abs(tokens))}`;
 }
 
+function formatUsd(usd: number) {
+  return `$${usd.toFixed(2)}`;
+}
+
 // The line under the legend: the turn's requests, the context it went from
-// and to, what it generated, and what each of its last steps added.
-export function turnLine(current: ContextBarTurn) {
+// and to, what it generated and cost (from the session's cost `costNow`), and
+// what each of its last steps added.
+export function turnLine(current: ContextBarTurn, costNow: number | null) {
   const last = current.steps.at(-1);
   if (last === undefined) return null;
   const growth = turnGrowth(current);
@@ -94,6 +102,7 @@ export function turnLine(current: ContextBarTurn) {
     `${current.isRunning ? 'This turn' : 'Last turn'}: ${count} step${count === 1 ? '' : 's'}`,
     `context ${context.join(' → ')}${growth === null ? '' : ` (${signed(growth)})`}`,
     `${formatTokens(current.steps.reduce((sum, step) => sum + step.output, 0))} out`,
+    current.costBefore === null || costNow === null ? null : formatUsd(costNow - current.costBefore),
     shown.length < 2 ? null : `steps ${steps.length > shown.length ? '… ' : ''}${shown.join(' ')}`,
   ]
     .filter(part => part !== null)
@@ -221,6 +230,7 @@ export const register: Register = on => {
     if (e.reason === 'clear') {
       await update($, breakdown, () => null);
       await update($, measured, () => null);
+      await update($, cost, () => null);
       await update($, turn, () => null);
     }
     return next(e);
@@ -229,6 +239,10 @@ export const register: Register = on => {
   registerTools(on);
 
   on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('cost') && e.cost !== undefined) {
+      const usd = e.cost.usd;
+      await update($, cost, () => usd);
+    }
     if (e.changed.includes('context')) {
       await update($, measured, () => e.context.tokens ?? null);
       await refresh($);
@@ -237,8 +251,8 @@ export const register: Register = on => {
   });
 
   on('turn.start', async ($, e, next) => {
-    const contextBefore = await read($, measured);
-    await update($, turn, () => ({ contextBefore, steps: [], compactedAt: null, isRunning: true }));
+    const [contextBefore, costBefore] = await Promise.all([read($, measured), read($, cost)]);
+    await update($, turn, () => ({ contextBefore, steps: [], compactedAt: null, costBefore, isRunning: true }));
     return next(e);
   });
 
@@ -267,12 +281,17 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rows = await read($, breakdown);
     if (e.props.hasSurvey || rows === null || rows.slices.length < 1) return next(e);
-    const current = await read($, turn);
+    const [current, costNow] = await Promise.all([read($, turn), read($, cost)]);
     const { Box, Text } = $.ui.resolve(e);
 
     const used = rows.slices.filter(slice => slice.kind === 'used').reduce((sum, slice) => sum + slice.tokens, 0);
     const percent = Math.round((used / Math.max(rows.window, 1)) * 100);
-    const summary = `${formatTokens(used)}/${formatTokens(rows.window)} (${percent}%)`;
+    const summary = [
+      `${formatTokens(used)}/${formatTokens(rows.window)} (${percent}%)`,
+      costNow === null ? null : formatUsd(costNow),
+    ]
+      .filter(part => part !== null)
+      .join(' · ');
 
     const parts = segments(rows, current === null ? null : turnGrowth(current));
     // The bar fills the band beside its summary, down to a floor.
@@ -282,7 +301,7 @@ export const register: Register = on => {
       cells,
       parts.map(isContent),
     );
-    const line = current === null ? null : turnLine(current);
+    const line = current === null ? null : turnLine(current, costNow);
 
     return (
       <Box flexDirection="column">
