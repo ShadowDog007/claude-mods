@@ -19,8 +19,9 @@ const BAND = {
 // Stands in for the engine beneath the plugin: the session state, the
 // prompts that reach the session (the person's, and the plugin's own with
 // `asUser`), and a plugin prompt's turn starting at once unless `isHolding`,
-// when each waits for `release()` (the session not yet idle).
-function engine(on: On, { isHolding = false }: { isHolding?: boolean } = {}) {
+// when each waits for `release()` (the session not yet idle), or refused by a
+// hook beneath when `isRefusing`.
+function engine(on: On, { isHolding = false, isRefusing = false }: { isHolding?: boolean; isRefusing?: boolean } = {}) {
   const clock = mock.clock(on, { now: 0 });
   const state = { value: EMPTY, version: 1 };
   on('state.get', () => ({ value: { value: state.value, version: state.version } }));
@@ -41,6 +42,7 @@ function engine(on: On, { isHolding = false }: { isHolding?: boolean } = {}) {
       return { text: e.text };
     }
     if (isHolding) await new Promise<void>(resolve => held.push(resolve));
+    if (isRefusing) return { drop: 'blocked by a UserPromptSubmit hook' };
     sent.push(e.text);
     return { text: e.text };
   });
@@ -163,12 +165,13 @@ test('an interrupted turn pauses the queue until /queue-resume', async ($, on) =
   expect(sent).toEqual(['later']);
 });
 
-test('a turn that ends with an answer resumes a paused queue', async ($, on) => {
+test('a turn of the person\'s own that ends with an answer resumes a paused queue', async ($, on) => {
   const { sent } = engine(on);
   await start($);
   await typed($, 'later', { wait: true });
   await endTurn($, 'aborted');
 
+  await $.prompt.submit({ text: 'something else', wait: false, origin: COMPOSER });
   await $.turn.start({ text: 'something else', turnId: 't2' });
   await endTurn($, 'answer', 't2');
   await settle();
@@ -234,4 +237,51 @@ test('the band above the prompt lists the queue, on every surface that has it', 
     expect(await ui.find({ type: 'Text', text: '1. run the linter' })).toBeDefined();
     await ui.unmount();
   }
+});
+
+test('a turn the person did not start leaves a paused queue paused', async ($, on) => {
+  const { sent, state } = engine(on);
+  await start($);
+  await typed($, 'later', { wait: true });
+  await endTurn($, 'aborted');
+
+  // A background task's notification wakes the session.
+  await $.turn.start({ text: 'task finished', turnId: 't2' });
+  await endTurn($, 'answer', 't2');
+  await settle();
+  expect(sent).toEqual([]);
+  expect(state.value.isPaused).toBe(true);
+});
+
+test('a queued prompt refused on its way is put back and the queue paused', async ($, on) => {
+  const { clock, sent, state, logged } = engine(on, { isRefusing: true });
+  await start($);
+  await typed($, 'first', { wait: true });
+  await typed($, 'second', { wait: true });
+
+  await endTurn($);
+  await flush(clock);
+  expect(sent).toEqual([]);
+  expect(state.value).toEqual({ prompts: ['first', 'second'], isPaused: true });
+  expect(logged).toEqual(['prompt-queue: could not send a queued prompt: blocked by a UserPromptSubmit hook']);
+});
+
+test('a prompt with an @-mention is sent as usual, since a plugin\'s prompt would lose the file', async ($, on) => {
+  const { entered, state } = engine(on);
+  await start($);
+
+  await typed($, '@src/foo.ts add tests for this', { wait: true });
+  expect(entered).toEqual(['@src/foo.ts add tests for this']);
+  expect(state.value.prompts).toEqual([]);
+});
+
+test('a prompt queued just as its turn ended is still sent', async ($, on) => {
+  const { clock, sent } = engine(on);
+  await start($);
+  await endTurn($);
+
+  // Typed over the turn, it arrives after the turn has ended.
+  await typed($, 'late', { wait: true });
+  await flush(clock);
+  expect(sent).toEqual(['late']);
 });

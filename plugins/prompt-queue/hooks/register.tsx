@@ -18,6 +18,13 @@ let isTurnRunning = false;
 // Set from sending a queued prompt until its turn has started, so a turn that
 // ends in the meantime (a steering prompt that went first) sends no second.
 let isSending = false;
+// Set when a prompt of the person's own reaches the session, and cleared as a
+// turn ends: only a turn they started resumes a paused queue, not one a
+// background task or another plugin woke.
+let hasPersonPrompted = false;
+// An `@file` mention, which the engine expands for the person's prompt but
+// not for a plugin's.
+const MENTION = /(^|\s)@\S/;
 
 function preview(text: string) {
   const line = text.replace(/\s+/g, ' ').trim();
@@ -46,7 +53,9 @@ async function sendNext($: EngineInterface) {
   // hook calling this may be holding up.
   $.prompt
     .submit({ text, asUser: true })
+    .then(result => (result.drop === undefined ? undefined : Promise.reject(new Error(result.drop))))
     .catch(async error => {
+      // Back at the front, paused, rather than lost.
       $.ui.log(`prompt-queue: could not send a queued prompt: ${error instanceof Error ? error.message : String(error)}`);
       await update($, queue, latest => ({ prompts: [text, ...latest.prompts], isPaused: true }));
     })
@@ -93,13 +102,20 @@ export const register: Register = on => {
   // reaching the running turn. A plain Enter steers, as it always does.
   on('prompt.submit', async ($, e, next) => {
     const isPerson = e.origin.kind === 'composer' || e.origin.kind === 'bridge';
-    if (!isPerson || !e.wait || e.turnId === undefined) return next(e);
-    if (e.attachments !== undefined && e.attachments.length > 0) {
-      $.ui.toast('prompt-queue: a prompt with attachments cannot be queued; sent as usual');
+    if (!isPerson) return next(e);
+    if (!e.wait || e.turnId === undefined) {
+      hasPersonPrompted = true;
+      return next(e);
+    }
+    if ((e.attachments !== undefined && e.attachments.length > 0) || MENTION.test(e.text)) {
+      $.ui.toast('prompt-queue: a prompt with attachments or @-mentions cannot be queued; sent as usual');
+      hasPersonPrompted = true;
       return next(e);
     }
     const current = await enqueue($, e.text);
     $.ui.toast(`prompt-queue: queued (${plural(current.prompts.length)} waiting)`);
+    // The turn it was typed over may have ended while it was on its way.
+    if (!isTurnRunning) sendNextSoon($);
     return { drop: 'queued by prompt-queue until the turn ends' };
   });
 
@@ -140,8 +156,10 @@ export const register: Register = on => {
     const result = await next(e);
     if (e.agentId !== undefined) return result;
     isTurnRunning = false;
+    const isTheirs = hasPersonPrompted;
+    hasPersonPrompted = false;
     if (e.reason === 'answer') {
-      await update($, queue, current => (current.isPaused ? { ...current, isPaused: false } : current));
+      if (isTheirs) await update($, queue, current => (current.isPaused ? { ...current, isPaused: false } : current));
       await sendNext($);
     } else {
       // Interrupted (Esc) or failed: wait for the person rather than carry on.
@@ -167,7 +185,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Text dimColor>
           {`Queued: ${plural(current.prompts.length)} · `}
-          {current.isPaused ? 'paused after an interrupt, /queue-resume to send' : 'sent after the turn ends'}
+          {current.isPaused ? 'paused, /queue-resume to send' : 'sent after the turn ends'}
         </Text>
         {current.prompts.slice(0, SHOWN).map((text, index) => (
           <Text dimColor>{`${index + 1}. ${preview(text)}`}</Text>

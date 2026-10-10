@@ -18,7 +18,7 @@ While prompts are queued, a band above the prompt lists the first few.
 
 ## Interrupting
 
-If you interrupt a turn (`Esc`) or it ends on an error while prompts are queued, the queue pauses so it doesn't start the next prompt behind your back. It resumes when a turn next ends with an answer (say, after you send a prompt of your own), or straight away with `/queue-resume`.
+If you interrupt a turn (`Esc`) or it ends on an error while prompts are queued, the queue pauses so it doesn't start the next prompt behind your back. It resumes when a turn you started with a prompt of your own ends with an answer, or straight away with `/queue-resume`. A turn something else started (a background task finishing, another plugin) leaves it paused.
 
 ## Commands
 
@@ -30,6 +30,8 @@ If you interrupt a turn (`Esc`) or it ends on an error while prompts are queued,
 
 ## Notes
 
-- A prompt with pasted images or other attachments can't be held by a plugin; `ctrl+x enter` sends it as usual and shows a toast.
+- A prompt with pasted images or other attachments can't be held by a plugin, and `@file` mentions aren't expanded in a prompt a plugin sends; `ctrl+x enter` sends such a prompt as usual and shows a toast.
+- If a hook refuses a queued prompt when it is sent (a `UserPromptSubmit` hook that blocks it, say), it goes back to the front of the queue and the queue pauses.
+- A queued prompt leaves the queue once it is sent. If it is waiting behind a steering prompt whose turn you then interrupt, it still runs after it.
 - The queue lives in the session's plugin state, so it survives a plugin reload. `/clear` empties it.
 - Subagent turns don't count: only a turn of the main conversation ending sends the next prompt.
