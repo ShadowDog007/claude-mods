@@ -29,7 +29,7 @@ Sets when it compacts, for the rest of the session (a `/clear` keeps it):
 - `on`: whenever the session sits idle, background work or not.
 - `off`: never.
 
-With no argument it says what it is set to, the idle time, and the cache lifetime it worked out. It runs at once, even mid-turn.
+With no argument it says what it is set to, the idle time, the context size it waits for and the cache lifetime it worked out, then when it will next compact or why nothing is scheduled. It runs at once, even mid-turn.
 
 ## Configuration
 

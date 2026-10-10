@@ -185,15 +185,35 @@ function positive(value: unknown) {
 }
 
 // What /idle-compact answers: the mode, and when it compacts in it.
+function tokens(count: number) {
+  return count < 1000 ? String(count) : `${Math.round(count / 1000)}k`;
+}
+
+// What /idle-compact answers: the mode, when it compacts in it, and whether
+// it is set to now and why not. The engine puts the plugin's name before it.
 async function describe($: EngineInterface, limits: Limits) {
   const current = await read($, mode);
-  if (current === 'off') return 'idle-compact is off for this session';
+  if (current === 'off') return 'off for this session';
   const session = await read($, tracker);
   const cache = session.lastModelCallAt === null ? ((await detectLifetime($)) ?? '1h') : lastLifetime(session);
   const minutes = limits.idleMinutes ?? IDLE_MINUTES[cache];
   const when = current === 'on' ? 'whenever the session sits idle' : 'while background work runs';
   const cacheName = cache === '5m' ? 'five-minute' : 'one-hour';
-  return `idle-compact is ${current}: compacts after ${minutes} idle minutes ${when} (${cacheName} prompt cache)`;
+  const rule = `${current}: compacts after ${minutes} idle minutes ${when}, once the context holds ${tokens(limits.minContextTokens)} tokens (${cacheName} prompt cache)`;
+  return `${rule}\n${await whyNow($, limits, current, session)}`;
+}
+
+async function whyNow($: EngineInterface, limits: Limits, current: IdleCompactMode, session: IdleCompactTracker) {
+  if (session.contextTokens !== null && session.contextTokens < limits.minContextTokens) {
+    return `Nothing scheduled: the context holds ${tokens(session.contextTokens)} tokens`;
+  }
+  if (timer !== undefined && session.lastModelCallAt !== null) {
+    return `Scheduled for ${clockTime(session.lastModelCallAt + (await idleMs($, limits)))}`;
+  }
+  if (session.hasCompacted) return 'Nothing scheduled: compacted since the last model request';
+  if (!session.isIdle) return 'Nothing scheduled until a turn ends';
+  if (current === 'auto' && session.backgroundTasks.length < 1) return 'Nothing scheduled: no background work is running';
+  return 'Nothing scheduled';
 }
 
 export const register: Register = (on, options) => {
@@ -221,7 +241,7 @@ export const register: Register = (on, options) => {
     const choice = e.args.trim().toLowerCase();
     if (choice !== '') {
       const chosen = MODES.find(each => each === choice);
-      if (chosen === undefined) return { text: 'Usage: /idle-compact [auto|on|off]' };
+      if (chosen === undefined) return { text: 'usage: /idle-compact [auto|on|off]' };
       await update($, mode, () => chosen);
       await arm($, limits);
     }

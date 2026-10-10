@@ -105,6 +105,11 @@ async function turn(
   if (isMeasuredLate) await measure();
 }
 
+function clockTime(at: number) {
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
 async function command($: Engine, args: string) {
   const ran = await $.command.run({
     command: 'idle-compact',
@@ -343,7 +348,8 @@ test('/idle-compact on compacts an idle session with no background work', async 
   await turn($, []);
   // Switched on while idle, it arms at once.
   expect(await command($, 'on')).toBe(
-    'idle-compact is on: compacts after 59 idle minutes whenever the session sits idle (one-hour prompt cache)',
+    'on: compacts after 59 idle minutes whenever the session sits idle, once the context holds 100k tokens (one-hour prompt cache)\nScheduled for ' +
+      clockTime(59 * MINUTE),
   );
 
   expect(await compactsAfter(clock, compacted)).toBe(59);
@@ -363,7 +369,7 @@ test('/idle-compact off stops it for the session, through a /clear, until switch
   // The state after the /clear starts afresh: the mode is kept regardless.
   const { clock, compacted, status } = engine(on, { isClearFresh: true });
   await turn($, [SHELL]);
-  expect(await command($, 'off')).toBe('idle-compact is off for this session');
+  expect(await command($, 'off')).toBe('off for this session');
   expect(status.text).toBe(undefined);
 
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
@@ -381,8 +387,15 @@ test('/idle-compact says what it is set to, and how it is used', async ($, on) =
   await turn($, [], { rateLimits: [] });
 
   expect(await command($, '')).toBe(
-    'idle-compact is auto: compacts after 4 idle minutes while background work runs (five-minute prompt cache)',
+    'auto: compacts after 4 idle minutes while background work runs, once the context holds 100k tokens (five-minute prompt cache)\nNothing scheduled: no background work is running',
   );
-  expect(await command($, 'sometimes')).toBe('Usage: /idle-compact [auto|on|off]');
-  expect(await command($, ' ON ')).toMatch(/^idle-compact is on:/);
+  expect(await command($, 'sometimes')).toBe('usage: /idle-compact [auto|on|off]');
+  expect(await command($, ' ON ')).toMatch(/^on: /);
+});
+
+test('/idle-compact says when the context is too small to compact', async ($, on) => {
+  engine(on);
+  await turn($, [SHELL], { tokens: 12_345 });
+
+  expect(await command($, 'on')).toMatch(/\nNothing scheduled: the context holds 12k tokens$/);
 });
