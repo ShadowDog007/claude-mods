@@ -21,6 +21,12 @@
       "source": "./plugins/context-bar",
       "description": "A coloured bar above the prompt showing what fills the context window, by category, and how much the last turn and its steps added.",
       "version": "0.1.0"
+    },
+    {
+      "name": "prompt-queue",
+      "source": "./plugins/prompt-queue",
+      "description": "Queues prompts to run after the current turn ends, while a plain Enter keeps steering the running turn.",
+      "version": "0.1.0"
     }
   ]
 }

@@ -1,0 +1,7 @@
+{
+  "name": "prompt-queue",
+  "version": "0.1.0",
+  "description": "Queues prompts to run after the current turn ends, while a plain Enter keeps steering the running turn.",
+  "author": { "name": "Michael McKnight" },
+  "types": "./types/index.d.ts"
+}
