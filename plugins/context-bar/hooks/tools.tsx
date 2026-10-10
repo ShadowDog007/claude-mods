@@ -152,6 +152,13 @@ export function sizeBar(tokens: number, largest: number) {
   return `${'█'.repeat(Math.floor(eighths / 8))}${EIGHTHS[eighths % 8]}`.padEnd(BAR_CELLS);
 }
 
+// The desktop's share bar: `tokens` against the largest, as a percentage of
+// the column the surface lays out; never less than one eighth of a cell, as on
+// the terminal.
+export function sharePercent(tokens: number, largest: number) {
+  return Math.max(Math.round((tokens / Math.max(largest, 1)) * 1000) / 10, 100 / (BAR_CELLS * 8));
+}
+
 export function formatTokens(tokens: number) {
   const size = Math.abs(tokens);
   if (size < 1_000) return String(Math.round(tokens));
@@ -209,7 +216,9 @@ async function messagesTokens($: EngineInterface) {
 }
 
 export function registerTools(on: On) {
-  on('command.run', { command: TOOLS_PANE }, async ($, e) => {
+  // The command's name written out, as register.tsx registers it, so the
+  // engine sees the hook answers only its own command.
+  on('command.run', { command: 'context-tools' }, async ($, e) => {
     await $.ui.open({
       id: TOOLS_PANE,
       title: 'Largest tool results',
@@ -270,14 +279,14 @@ export function registerTools(on: On) {
         ) : (
           <Box flexDirection="column" marginTop={1}>
             <Box flexDirection="row">
-              <Box width={widths.rank + GAP}>
+              <Box width={widths.rank} marginRight={GAP} justifyContent="flex-end">
                 <Text dimColor bold>
-                  {'#'.padStart(widths.rank)}
+                  #
                 </Text>
               </Box>
-              <Box width={widths.size + GAP}>
+              <Box width={widths.size} marginRight={GAP} justifyContent="flex-end">
                 <Text dimColor bold>
-                  {'Size'.padStart(widths.size)}
+                  Size
                 </Text>
               </Box>
               <Box width={widths.bar + GAP}>
@@ -301,7 +310,7 @@ export function registerTools(on: On) {
                 </Text>
               ) : null}
             </Box>
-            <Text dimColor>
+            <Text dimColor wrap="truncate-end">
               {'─'.repeat(Math.max(e.props.bodyColumns, 0))}
             </Text>
           </Box>
@@ -312,14 +321,23 @@ export function registerTools(on: On) {
           return (
             <Box key={`row-${each.id}`} flexDirection="column">
               <Box flexDirection="row">
-                <Box width={widths.rank + GAP}>
-                  <Text dimColor>{String(index + 1).padStart(widths.rank)}</Text>
+                <Box width={widths.rank} marginRight={GAP} justifyContent="flex-end">
+                  <Text dimColor>{String(index + 1)}</Text>
                 </Box>
-                <Box width={widths.size + GAP}>
-                  <Text>{row.size.padStart(widths.size)}</Text>
+                <Box width={widths.size} marginRight={GAP} justifyContent="flex-end">
+                  <Text>{row.size}</Text>
                 </Box>
-                <Box width={widths.bar + GAP}>
-                  <Text color="suggestion">{sizeBar(each.tokens, listed[0]!.tokens)}</Text>
+                <Box width={widths.bar} marginRight={GAP}>
+                  {e.surface === 'desktop' ? (
+                    <Box
+                      key={`share-${each.id}`}
+                      width={`${sharePercent(each.tokens, listed[0]!.tokens)}%`}
+                      height={1}
+                      backgroundColor="suggestion"
+                    />
+                  ) : (
+                    <Text color="suggestion">{sizeBar(each.tokens, listed[0]!.tokens)}</Text>
+                  )}
                 </Box>
                 <Box width={widths.tool + GAP}>
                   {each.isError ? <Text color="error">{row.tool}</Text> : <Text dimColor>{row.tool}</Text>}
