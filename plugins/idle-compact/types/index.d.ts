@@ -1,5 +1,9 @@
 export type IdleCompactTask = { id: string; type: string };
 
+// What /idle-compact sets for the session: `auto` compacts an idle session
+// waiting on background work, `on` any idle session, `off` none.
+export type IdleCompactMode = 'auto' | 'on' | 'off';
+
 // What the plugin tracks of the main conversation, kept in the session's
 // state so a reload (an option changed in /config, /reload-plugins) keeps it.
 export type IdleCompactTracker = {
@@ -13,10 +17,19 @@ export type IdleCompactTracker = {
   backgroundTasks: IdleCompactTask[];
   // One compaction per idle stretch: the next model request re-arms it.
   hasCompacted: boolean;
+  // Between turns: set when one stops, cleared when the next starts.
+  isIdle: boolean;
+  // The subscription's usage windows as the last response reported them,
+  // empty off a subscription; null until one is measured.
+  rateLimits: { kind: string; percentUsed: number }[] | null;
+  // How long the cache the last model request wrote lives, as worked out
+  // when it was sent; null until the session is known to be on a
+  // subscription or not.
+  cacheLifetime: '5m' | '1h' | null;
 };
 
 declare module 'claude-code' {
   interface PluginState {
-    'idle-compact': { tracker: IdleCompactTracker };
+    'idle-compact': { tracker: IdleCompactTracker; mode: IdleCompactMode };
   }
 }
