@@ -3,9 +3,21 @@ import type { Engine } from 'claude-code/testing';
 import { expect, test } from 'claude-code/testing';
 
 import { allocate, legend, segments, turnLine } from './register';
-import { describe, fitMiddle, formatTokens, reminderTokens, sizeBar, tableColumns, toolResults } from './tools';
+import {
+  describe,
+  fitMiddle,
+  formatTokens,
+  reminderTokens,
+  sharePercent,
+  sizeBar,
+  tableColumns,
+  toolResults,
+} from './tools';
 
 const WINDOW = 200_000;
+// The surfaces that draw the band above the prompt.
+const SURFACES = ['terminal', 'desktop'] as const;
+type Surface = (typeof SURFACES)[number];
 
 function row(name: string, tokens: number, color: string, kind: ContextCategory['kind'] = 'used'): ContextCategory {
   return { name, tokens, color, kind, isDeferred: kind === 'deferred' };
@@ -146,10 +158,10 @@ async function turn($: Engine, { contexts, ledger }: ReturnType<typeof engine>, 
   await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: false } as never);
 }
 
-function band(bodyColumns = 80, hasSurvey = false) {
+function band(bodyColumns = 80, hasSurvey = false, surface: Surface = 'terminal') {
   return {
     plugin: 'context-bar',
-    surface: 'terminal' as const,
+    surface,
     component: 'AbovePrompt' as const,
     props: { hasSurvey, isWorking: false, maxRows: 20, bodyColumns, scroll: { offset: 0, bodyRows: 20 }, view: {} },
   };
@@ -243,9 +255,11 @@ test('formats token counts compactly', () => {
 
 test('draws nothing before the context is measured', async ($, on) => {
   engine(on);
-  const ui = await $.ui.mount(band());
-  expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
-  await ui.unmount();
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(band(80, false, surface));
+    expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
+    await ui.unmount();
+  }
 });
 
 test('draws the bar, a legend by category, and the last turn', async ($, on) => {
@@ -273,6 +287,27 @@ test('draws the bar, a legend by category, and the last turn', async ($, on) => 
   await narrow.unmount();
 });
 
+test('lays the bar out on the desktop by each segment\'s share, in solid theme colours', async ($, on) => {
+  const stub = engine(on);
+  await turn($, stub, [41_000, 47_000, 52_000]);
+
+  const ui = await $.ui.mount(band(80, false, 'desktop'));
+  const bar = (await ui.find({ key: 'bar' }))!;
+  expect(bar.text).toBe('');
+  const system = (await ui.find({ key: 'segment-System' }))!;
+  expect(system.props).toMatchObject({ flexGrow: 10, minWidth: 1, backgroundColor: 'promptBorder' });
+  const carved = (await ui.find({ key: 'segment-Turn' }))!;
+  expect(carved.props).toMatchObject({ flexGrow: 6.25, backgroundColor: 'suggestion' });
+  expect((await ui.find({ key: 'segment-Free' }))!.props).toMatchObject({ minWidth: 0, backgroundColor: 'subtle' });
+  expect((await ui.find({ key: 'legend-Turn' }))!.text).toBe('Turn 13k');
+  expect((await ui.find({ key: 'legend-Buffer' }))!.text).toBe('Buffer 33k');
+  expect(await ui.find({ type: 'Text', text: /60k\/200k \(30%\) · \$1\.30/ })).toBeDefined();
+  expect(
+    await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · $0.30 · steps +1.0k +6.0k +5.0k' }),
+  ).toBeDefined();
+  await ui.unmount();
+});
+
 test('counts a turn compacted partway from where the compaction left it', async ($, on) => {
   const stub = engine(on);
   await turn($, stub, [45_000, 12_000, 15_000]);
@@ -290,18 +325,22 @@ test('counts a turn compacted partway from where the compaction left it', async 
 test('yields the band to a survey', async ($, on) => {
   const stub = engine(on);
   await turn($, stub, [41_000]);
-  const ui = await $.ui.mount(band(80, true));
-  expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
-  await ui.unmount();
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(band(80, true, surface));
+    expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
+    await ui.unmount();
+  }
 });
 
 test('forgets the conversation on /clear', async ($, on) => {
   const stub = engine(on);
   await turn($, stub, [41_000]);
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
-  const ui = await $.ui.mount(band());
-  expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
-  await ui.unmount();
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(band(80, false, surface));
+    expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
+    await ui.unmount();
+  }
 });
 
 test('says what a tool call set out to do', () => {
@@ -362,6 +401,12 @@ test('fits a target to its width by cutting its middle', () => {
   expect(fitMiddle('C:/Users/me/projects/app/src/engine.ts', 20)).toBe('C:/Users/m…engine.ts');
 });
 
+test('sizes the desktop\'s share bar as a percentage, never less than an eighth of a cell', () => {
+  expect(sharePercent(5_000, 10_000)).toBe(50);
+  expect(sharePercent(10_000, 10_000)).toBe(100);
+  expect(sharePercent(1, 10_000)).toBe(1.25);
+});
+
 test('sizes a bar in eighths of a cell, never less than one', () => {
   expect(sizeBar(100, 100)).toBe('██████████');
   expect(sizeBar(55, 100)).toBe('█████▌    ');
@@ -418,24 +463,28 @@ test('lists the tool results largest first, a call expanding on a press', async 
   const { messages } = engine(on);
   toolCalls(messages);
   await start($);
-  const ui = await $.ui.mount({
-    plugin: 'context-bar',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'context-tools',
-    props: { title: 'Largest tool results', isFocused: true, bodyColumns: 100, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} },
-  });
-  expect(await ui.find({ type: 'Text', text: /^2 results · ~5\.1k of 34k in messages/ })).toBeDefined();
-  expect((await ui.find({ key: 'tool-t2' }))?.text).toBe('▸ Run the tests');
-  expect((await ui.find({ key: 'tool-t1' }))?.text).toBe('▸ small.ts');
-  expect(await ui.find({ type: 'Text', text: 'npm test' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBe(undefined);
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({
+      plugin: 'context-bar',
+      surface,
+      component: 'Pane',
+      requestId: 'context-tools',
+      props: { title: 'Largest tool results', isFocused: true, bodyColumns: 100, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} },
+    });
+    expect(await ui.find({ type: 'Text', text: /^2 results · ~5.1k of 34k in messages/ })).toBeDefined();
+    expect((await ui.find({ key: 'tool-t2' }))?.text).toBe('▸ Run the tests');
+    expect((await ui.find({ key: 'tool-t1' }))?.text).toBe('▸ small.ts');
+    expect(await ui.find({ type: 'Text', text: 'npm test' })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBe(undefined);
+    // The desktop lays the share out as a filled box; the terminal draws it in glyphs.
+    expect((await ui.find({ key: 'share-t2' }))?.props.width).toBe(surface === 'desktop' ? '100%' : undefined);
 
-  await ui.press({ key: 'tool-t2' });
-  expect((await ui.find({ key: 'tool-t2' }))?.text).toBe('▾ Run the tests');
-  expect(await ui.find({ type: 'Text', text: 'command' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBeDefined();
-  await ui.press({ key: 'tool-t2' });
-  expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBe(undefined);
-  await ui.unmount();
+    await ui.press({ key: 'tool-t2' });
+    expect((await ui.find({ key: 'tool-t2' }))?.text).toBe('▾ Run the tests');
+    expect(await ui.find({ type: 'Text', text: 'command' })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBeDefined();
+    await ui.press({ key: 'tool-t2' });
+    expect(await ui.find({ type: 'Text', text: /12 passed/ })).toBe(undefined);
+    await ui.unmount();
+  }
 });

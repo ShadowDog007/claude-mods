@@ -15,6 +15,8 @@ Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · $0.30 · steps +
 
 The band yields to a survey, and can be collapsed and restored like any band above the prompt (`ctrl+x ctrl+a`, or the `[-]`/`[+]` at its right edge).
 
+In the desktop app the band has a view of its own: the bar is laid out by the app from each segment's share of the window in solid theme colours, the free space filled rather than shaded, so it fills the band at any font size. The legend puts a swatch beside each name and wraps rather than dropping what does not fit, and the turn line wraps too.
+
 ## `/context-tools`
 
 Opens a pane, as wide as the terminal allows, with a table of the twenty largest tool results in the context, each by what its call set out to do:
@@ -39,6 +41,7 @@ Largest tool results in the context     20 of 54 results · ~31k of 101k in mess
 - Click a call, or Tab to it and press Enter, to expand it: the call's arguments and the first lines of its result. Press it again to fold it.
 - The header counts the results and their total against the messages' share of the window.
 - Each result is sized by the tool's own output. The `<system-reminder>` blocks Claude Code attaches to whichever result comes next are left out of it and counted together in the header.
+- In the desktop app each result's share is a filled bar the app lays out, and the numbers are right-aligned by the app rather than padded with spaces, so the table lines up in any font.
 - The pane is for you alone: nothing of it reaches the model. Escape, `q` or Close dismisses it.
 
 The list is read from the context as it stands when drawn, so it holds what a compaction kept and nothing it dropped, and is drawn again after every response. Sizes are estimated from each result's text at about four characters a token, so images are not counted.

@@ -2,7 +2,9 @@ import { atom, read, update } from 'claude-code';
 import type { EngineInterface, ModelUsage, Register } from 'claude-code';
 
 import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
-import { formatTokens, registerTools, TOOLS_PANE } from './tools';
+import { desktopBand } from './desktop';
+import type { BandSegment as Segment } from './desktop';
+import { formatTokens, registerTools } from './tools';
 
 // Kept in the session's state, so a reload of the module draws at once rather
 // than waiting for the next response.
@@ -109,8 +111,6 @@ export function turnLine(current: ContextBarTurn, costNow: number | null) {
     .join(' · ');
 }
 
-type Segment = { name: string; tokens: number; color: string; kind: ContextBarSlice['kind'] | 'turn' };
-
 function isContent(segment: Segment) {
   return segment.kind === 'used' || segment.kind === 'turn';
 }
@@ -216,7 +216,7 @@ export function legend(parts: Segment[], columns: number): LegendItem[] {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: TOOLS_PANE,
+      name: 'context-tools',
       description: 'Show the largest tool results in the context',
       immediate: true,
     });
@@ -282,8 +282,6 @@ export const register: Register = on => {
     const rows = await read($, breakdown);
     if (e.props.hasSurvey || rows === null || rows.slices.length < 1) return next(e);
     const [current, costNow] = await Promise.all([read($, turn), read($, cost)]);
-    const { Box, Text } = $.ui.resolve(e);
-
     const used = rows.slices.filter(slice => slice.kind === 'used').reduce((sum, slice) => sum + slice.tokens, 0);
     const percent = Math.round((used / Math.max(rows.window, 1)) * 100);
     const summary = [
@@ -294,6 +292,10 @@ export const register: Register = on => {
       .join(' · ');
 
     const parts = segments(rows, current === null ? null : turnGrowth(current));
+    const line = current === null ? null : turnLine(current, costNow);
+    if (e.surface === 'desktop') return desktopBand($.ui.resolve(e), { parts, summary, line });
+
+    const { Box, Text } = $.ui.resolve(e);
     // The bar fills the band beside its summary, down to a floor.
     const cells = Math.max(e.props.bodyColumns - summary.length - 1, MIN_BAR_CELLS);
     const counts = allocate(
@@ -301,7 +303,6 @@ export const register: Register = on => {
       cells,
       parts.map(isContent),
     );
-    const line = current === null ? null : turnLine(current, costNow);
 
     return (
       <Box flexDirection="column">
