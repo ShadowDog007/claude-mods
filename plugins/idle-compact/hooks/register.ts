@@ -156,6 +156,8 @@ export const register: Register = (on, options) => {
     return yield* next(e);
   });
 
+  // Tracking is best effort: should it fail, the turn still stops as it would
+  // have, and the next turn's Stop takes the count again.
   on('classic.Stop', async ($, e, next) => {
     if (e.agent_id === undefined) {
       const backgroundTasks = (e.background_tasks ?? []).map(({ id, type }) => ({ id, type }));
@@ -163,5 +165,5 @@ export const register: Register = (on, options) => {
       await arm($, limits);
     }
     return next(e);
-  });
+  }).catch(($, e, next) => next(e));
 };

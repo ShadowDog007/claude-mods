@@ -27,7 +27,9 @@ function engine(
   const status: { text: string | undefined } = { text: undefined };
   on('ui.status', (_$, e) => {
     status.text = e.text;
+    return { value: undefined };
   });
+  on('ui.toast', () => ({ value: undefined }));
   const state = { value: tracker, version: 1 };
   on('state.get', () => ({ value: { value: state.value, version: state.version } }));
   on('state.set', (_$, e) => {
