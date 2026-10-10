@@ -299,6 +299,9 @@ test('lays the bar out on the desktop by each segment\'s share, in solid theme c
   const carved = (await ui.find({ key: 'segment-Turn' }))!;
   expect(carved.props).toMatchObject({ flexGrow: 6.25, backgroundColor: 'suggestion' });
   expect((await ui.find({ key: 'segment-Free' }))!.props).toMatchObject({ minWidth: 0, backgroundColor: 'subtle' });
+  // The terminal's subagent keys, which the desktop need not hold, take their plain colours.
+  expect((await ui.find({ key: 'segment-Messages' }))!.props).toMatchObject({ backgroundColor: 'purple' });
+  expect((await ui.find({ key: 'segment-MCP' }))!.props).toMatchObject({ backgroundColor: 'cyan' });
   expect((await ui.find({ key: 'legend-Turn' }))!.text).toBe('Turn 13k');
   expect((await ui.find({ key: 'legend-Buffer' }))!.text).toBe('Buffer 33k');
   expect(await ui.find({ type: 'Text', text: /60k\/200k \(30%\) · \$1\.30/ })).toBeDefined();
