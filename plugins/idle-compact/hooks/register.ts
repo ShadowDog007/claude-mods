@@ -22,6 +22,7 @@ const IDLE: IdleCompactTracker = {
   hasCompacted: false,
   isIdle: false,
   rateLimits: null,
+  cacheLifetime: null,
 };
 
 // Kept in the session's state, so a reload of the module carries on where it
@@ -34,6 +35,19 @@ function track($: EngineInterface, change: Partial<IdleCompactTracker>) {
   return update($, tracker, current => ({ ...current, ...change }));
 }
 
+// What a /clear keeps: the mode, and what the usage limits tell of the
+// account. Held here as well as in the state, should the state start afresh
+// with the new conversation, and written back by the first hook after it.
+let carried: { mode: IdleCompactMode; rateLimits: IdleCompactTracker['rateLimits'] } | undefined;
+
+async function restore($: EngineInterface) {
+  if (carried === undefined) return;
+  const { mode: kept, rateLimits } = carried;
+  carried = undefined;
+  await update($, mode, () => kept);
+  await update($, tracker, current => ({ ...current, rateLimits: current.rateLimits ?? rateLimits }));
+}
+
 function isEnabled(value: string | undefined) {
   return value !== undefined && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
 }
@@ -42,12 +56,13 @@ function lifetime(value: unknown): CacheLifetime | null {
   return value === '5m' || value === '1h' ? value : null;
 }
 
-// How long the main conversation's prompt cache lives, worked out as Claude
-// Code picks it: the environment and settings that force one, then an hour on
-// a subscription within its plan's usage and five minutes otherwise (an API
-// key, a cloud provider, usage past the plan). Until the first response tells
-// whether the session is on a subscription, it takes the hour.
-async function cacheLifetime($: EngineInterface): Promise<CacheLifetime> {
+// How long a request sent now would have its prompt cache live, worked out as
+// Claude Code picks it: the environment and settings that force one, then an
+// hour on a subscription within its plan's usage and five minutes otherwise
+// (an API key, a cloud provider, a Claude gateway's spend limit, usage past
+// the plan). Null until a response tells whether the session is on a
+// subscription.
+async function detectLifetime($: EngineInterface): Promise<CacheLifetime | null> {
   if (isEnabled(await $.env.get('FORCE_PROMPT_CACHING_5M'))) return '5m';
   const fromEnv = lifetime(await $.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL'));
   if (fromEnv) return fromEnv;
@@ -55,12 +70,20 @@ async function cacheLifetime($: EngineInterface): Promise<CacheLifetime> {
   if (fromSettings) return fromSettings;
   if (isEnabled(await $.env.get('ENABLE_PROMPT_CACHING_1H'))) return '1h';
   const { rateLimits } = await read($, tracker);
-  if (rateLimits === null) return '1h';
+  if (rateLimits === null) return null;
+  // A gateway's spend limit has no one-hour cache, whatever else it reports.
+  if (rateLimits.some(limit => limit.kind === 'spend_limit')) return '5m';
   return rateLimits.length > 0 && rateLimits.every(limit => limit.percentUsed < 100) ? '1h' : '5m';
 }
 
+// The lifetime of the cache the last model request wrote, which is the one
+// that matters while idle; the hour when it is not yet known.
+function lastLifetime(session: IdleCompactTracker): CacheLifetime {
+  return session.cacheLifetime ?? '1h';
+}
+
 async function idleMs($: EngineInterface, limits: Limits) {
-  return (limits.idleMinutes ?? IDLE_MINUTES[await cacheLifetime($)]) * 60_000;
+  return (limits.idleMinutes ?? IDLE_MINUTES[lastLifetime(await read($, tracker))]) * 60_000;
 }
 
 // Whether a session the last turn left with `backgroundTasks` compacts once idle.
@@ -165,7 +188,8 @@ function positive(value: unknown) {
 async function describe($: EngineInterface, limits: Limits) {
   const current = await read($, mode);
   if (current === 'off') return 'idle-compact is off for this session';
-  const cache = await cacheLifetime($);
+  const session = await read($, tracker);
+  const cache = session.lastModelCallAt === null ? ((await detectLifetime($)) ?? '1h') : lastLifetime(session);
   const minutes = limits.idleMinutes ?? IDLE_MINUTES[cache];
   const when = current === 'on' ? 'whenever the session sits idle' : 'while background work runs';
   const cacheName = cache === '5m' ? 'five-minute' : 'one-hour';
@@ -180,6 +204,7 @@ export const register: Register = (on, options) => {
 
   // Fires again on every reload, which arms the timer from the session state.
   on('session.start', async ($, e, next) => {
+    await restore($);
     await $.command.register({
       name: 'idle-compact',
       description: 'Compact the session when idle: auto (with background work), on (always) or off',
@@ -192,6 +217,7 @@ export const register: Register = (on, options) => {
 
   // With no argument it says what it is set to; a mode sets it for the session.
   on('command.run', { command: 'idle-compact' }, async ($, e) => {
+    await restore($);
     const choice = e.args.trim().toLowerCase();
     if (choice !== '') {
       const chosen = MODES.find(each => each === choice);
@@ -206,33 +232,46 @@ export const register: Register = (on, options) => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       disarm($);
-      await track($, IDLE);
+      const { rateLimits } = await read($, tracker);
+      carried = { mode: await read($, mode), rateLimits };
+      await track($, { ...IDLE, rateLimits });
     }
     return next(e);
   });
 
   // Whether the session is on a subscription, and within its plan, comes with
-  // each response's rate limits: none off a subscription.
+  // each response's rate limits: none off a subscription. The first tells the
+  // lifetime of the cache the session's first request wrote. Arming again
+  // moves a timer set before then, whichever of this and Stop comes first.
   on('session.measure', async ($, e, next) => {
+    await restore($);
     await track($, {
       contextTokens: e.context.tokens ?? null,
       rateLimits: e.rateLimits.map(({ kind, percentUsed }) => ({ kind, percentUsed })),
     });
-    await showSchedule($, limits);
+    if ((await read($, tracker)).cacheLifetime === null) await track($, { cacheLifetime: await detectLifetime($) });
+    await arm($, limits);
     return next(e);
   });
 
   on('turn.start', async ($, e, next) => {
     // Retaken when the turn stops, so none count while it runs; an
     // interrupted turn has no Stop and leaves none counted.
+    await restore($);
     disarm($);
     await track($, { backgroundTasks: [], isIdle: false });
     return next(e);
   });
 
   on('turn.step', async function* ($, e, next) {
+    // Each request's cache lives as long as it is set to when it is sent.
     if (e.agentId === undefined) {
-      await track($, { lastModelCallAt: await $.clock.now(), hasCompacted: false });
+      await restore($);
+      await track($, {
+        lastModelCallAt: await $.clock.now(),
+        hasCompacted: false,
+        cacheLifetime: await detectLifetime($),
+      });
     }
     return yield* next(e);
   });
@@ -241,6 +280,7 @@ export const register: Register = (on, options) => {
   // have, and the next turn's Stop takes the count again.
   on('classic.Stop', async ($, e, next) => {
     if (e.agent_id === undefined) {
+      await restore($);
       const backgroundTasks = (e.background_tasks ?? []).map(({ id, type }) => ({ id, type }));
       await track($, { backgroundTasks, isIdle: true });
       await arm($, limits);

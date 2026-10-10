@@ -14,10 +14,10 @@ It compacts at most once per idle stretch; the next model request re-arms it. Wh
 The idle time counts from when a request is sent, because that is when the prompt cache's lifetime is refreshed. Compacting just before the lifetime runs out means the compaction request still reads the conversation from cache, and the session wakes to a smaller context when the background work reports back. It is a minute short of the cache's lifetime, which it works out as Claude Code picks it:
 
 - **59 minutes** under the one-hour cache: a Claude subscription within its plan's usage.
-- **4 minutes** under the five-minute cache: an API key, a cloud provider, or a subscription past its plan's usage (on usage credits).
+- **4 minutes** under the five-minute cache: an API key, a cloud provider, a Claude gateway with a spend limit, or a subscription past its plan's usage (on usage credits).
 - `FORCE_PROMPT_CACHING_5M`, `CLAUDE_CODE_PROMPT_CACHE_TTL`, the `promptCacheTtl` setting and `ENABLE_PROMPT_CACHING_1H` override that, in that order, as they do the cache itself.
 
-Whether the session is on a subscription is read from the usage limits each response reports, so until the first response it takes the one-hour cache. Set `idleMinutes` to pick the idle time yourself.
+Whether the session is on a subscription is read from the usage limits each response reports, and kept through `/clear`. The lifetime is the one the last model request was sent under, so usage limits moving while the session sits idle do not change it. Until the first response is measured it takes the one-hour cache, and moves the timer once it is. Set `idleMinutes` to pick the idle time yourself.
 
 While a compaction is scheduled and the context is big enough for it, the plugin pins `idle-compact scheduled for HH:MM` (local time) as its own status line under the prompt. The line clears when a turn starts, when it compacts, or when there's nothing left to compact for. When it compacts, it also shows a toast.
 

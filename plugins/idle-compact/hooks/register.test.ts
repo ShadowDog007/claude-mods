@@ -15,6 +15,7 @@ const IDLE: IdleCompactTracker = {
   hasCompacted: false,
   isIdle: false,
   rateLimits: null,
+  cacheLifetime: null,
 };
 
 // Stands in for the engine beneath the plugin: a session, a model request
@@ -30,8 +31,10 @@ function engine(
     tracker = IDLE,
     env = {},
     settings = {},
+    isClearFresh = false,
   }: {
     isFailing?: boolean;
+    isClearFresh?: boolean;
     tracker?: IdleCompactTracker;
     env?: Record<string, string>;
     settings?: Record<string, unknown>;
@@ -63,7 +66,11 @@ function engine(
   });
   on('session.start', (_$, e) => ({ cwd: e.cwd }));
   on('session.measure', (_$, e) => ({ changed: e.changed }));
-  on('session.end', (_$, e) => ({ sessionId: e.sessionId }));
+  on('session.end', (_$, e) => {
+    // The conversation after a /clear may start from no state at all.
+    if (isClearFresh && e.reason === 'clear') slots.clear();
+    return { sessionId: e.sessionId };
+  });
   on('turn.start', (_$, e) => ({ turnId: e.turnId }));
   on('classic.Stop', () => ({}));
   on('turn.step', async function* (_$, e) {
@@ -82,14 +89,20 @@ function engine(
 async function turn(
   $: Engine,
   backgroundTasks: (typeof SHELL)[],
-  { tokens = 150_000, rateLimits = SUBSCRIPTION }: { tokens?: number; rateLimits?: typeof SUBSCRIPTION } = {},
+  {
+    tokens = 150_000,
+    rateLimits = SUBSCRIPTION,
+    isMeasuredLate = false,
+  }: { tokens?: number; rateLimits?: typeof SUBSCRIPTION; isMeasuredLate?: boolean } = {},
 ) {
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
   await $.turn.start({ text: 'go', turnId: 't1' });
   const step = $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 });
   for await (const _ of step);
-  await $.session.measure({ context: { tokens, window: 200_000 }, rateLimits, changed: ['context'] });
+  const measure = () => $.session.measure({ context: { tokens, window: 200_000 }, rateLimits, changed: ['context'] });
+  if (!isMeasuredLate) await measure();
   await $.classic.Stop({ stop_hook_active: false, background_tasks: backgroundTasks });
+  if (isMeasuredLate) await measure();
 }
 
 async function command($: Engine, args: string) {
@@ -139,6 +152,45 @@ test('compacts after 4 idle minutes under the five-minute cache of an API key', 
 test('takes the five-minute cache once the subscription is past its plan usage', async ($, on) => {
   const { clock, compacted } = engine(on);
   await turn($, [SHELL], { rateLimits: [{ kind: 'five_hour', percentUsed: 100 }] });
+
+  expect(await compactsAfter(clock, compacted)).toBe(4);
+});
+
+test('takes the five-minute cache under a Claude gateway spend limit', async ($, on) => {
+  const { clock, compacted } = engine(on);
+  await turn($, [SHELL], { rateLimits: [{ kind: 'spend_limit', percentUsed: 10 }] });
+
+  expect(await compactsAfter(clock, compacted)).toBe(4);
+});
+
+test('moves the timer when the first response is measured after the turn stops', async ($, on) => {
+  const { clock, compacted } = engine(on);
+  await turn($, [SHELL], { rateLimits: [], isMeasuredLate: true });
+
+  expect(await compactsAfter(clock, compacted)).toBe(4);
+});
+
+test('keeps the lifetime of the cache the last request wrote while the usage limits move', async ($, on) => {
+  const { clock, compacted } = engine(on);
+  // Past the plan's usage, the second request writes a five-minute cache.
+  await turn($, [SHELL], { rateLimits: [{ kind: 'five_hour', percentUsed: 100 }] });
+  await turn($, [SHELL], { rateLimits: [{ kind: 'five_hour', percentUsed: 100 }] });
+  await clock.advance(MINUTE);
+  // The window resets while the session sits idle.
+  await $.session.measure({ context: { tokens: 150_000, window: 200_000 }, rateLimits: SUBSCRIPTION, changed: ['rateLimits'] });
+
+  expect(await compactsAfter(clock, compacted)).toBe(3);
+});
+
+test('keeps what the usage limits told of the account through a /clear', async ($, on) => {
+  const { clock, compacted } = engine(on, { isClearFresh: true });
+  await turn($, [], { rateLimits: [] });
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
+  // The request after the /clear is sent before any response is measured.
+  await $.turn.start({ text: 'go', turnId: 't2' });
+  for await (const _ of $.turn.step({ turnId: 't2', index: 0, model: 'm', messageCount: 1 }));
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [SHELL] });
+  await $.session.measure({ context: { tokens: 150_000, window: 200_000 }, rateLimits: [], changed: ['context'] });
 
   expect(await compactsAfter(clock, compacted)).toBe(4);
 });
@@ -227,6 +279,7 @@ test('keeps what it tracks in the session state', async ($, on) => {
     hasCompacted: false,
     isIdle: true,
     rateLimits: SUBSCRIPTION,
+    cacheLifetime: '1h',
   });
 });
 
@@ -239,6 +292,7 @@ test('carries on after a reload from what the session state holds', async ($, on
       hasCompacted: false,
       isIdle: true,
       rateLimits: SUBSCRIPTION,
+      cacheLifetime: '1h',
     },
   });
   // A reload: the module starts afresh, and no turn runs.
@@ -306,7 +360,8 @@ test('/idle-compact on does not compact while a turn runs', async ($, on) => {
 });
 
 test('/idle-compact off stops it for the session, through a /clear, until switched back', async ($, on) => {
-  const { clock, compacted, status } = engine(on);
+  // The state after the /clear starts afresh: the mode is kept regardless.
+  const { clock, compacted, status } = engine(on, { isClearFresh: true });
   await turn($, [SHELL]);
   expect(await command($, 'off')).toBe('idle-compact is off for this session');
   expect(status.text).toBe(undefined);

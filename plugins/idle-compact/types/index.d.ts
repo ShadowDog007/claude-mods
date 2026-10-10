@@ -22,6 +22,10 @@ export type IdleCompactTracker = {
   // The subscription's usage windows as the last response reported them,
   // empty off a subscription; null until one is measured.
   rateLimits: { kind: string; percentUsed: number }[] | null;
+  // How long the cache the last model request wrote lives, as worked out
+  // when it was sent; null until the session is known to be on a
+  // subscription or not.
+  cacheLifetime: '5m' | '1h' | null;
 };
 
 declare module 'claude-code' {
