@@ -72,7 +72,20 @@ function engine(
     return { sessionId: e.sessionId };
   });
   on('turn.start', (_$, e) => ({ turnId: e.turnId }));
-  on('classic.Stop', () => ({}));
+  on('turn.complete', (_$, e) => ({ text: e.answer }));
+  // A background command, monitor or subagent starts under the id the test
+  // gives it in `tool_use_id`; TaskStop stops the one its `task_id` names.
+  on('tool.call', (_$, e) => {
+    const id = e.tool_use_id ?? '';
+    if (e.tool === 'Bash') return { result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: id } };
+    if (e.tool === 'Monitor') return { result: { taskId: id, timeoutMs: 0, persistent: true } };
+    if (e.tool === 'Workflow') return { result: { status: 'async_launched', taskId: id, taskType: 'local_workflow' } };
+    if (e.tool === 'TaskStop') return { result: { message: 'stopped', task_id: e.task_id, task_type: 'local_bash' } };
+    return {
+      result: { status: 'async_launched', agentId: id, description: 'review', prompt: 'review', outputFile: '/tmp/a' },
+    };
+  });
+  on('prompt.submit', (_$, e) => ({ text: e.text, origin: e.origin }));
   on('turn.step', async function* (_$, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null };
   });
@@ -84,8 +97,29 @@ function engine(
   return { clock, compacted, state, status };
 }
 
-// One finished turn: a model request over `tokens` of context, leaving
-// `backgroundTasks` running, on a session whose usage windows read `rateLimits`.
+// Starts a background task as the tool call that runs it would.
+async function start($: Engine, task: { id: string; type: string }) {
+  if (task.type === 'shell') {
+    await $.tool.call({ tool: 'Bash', tool_use_id: task.id, command: 'npm run dev', run_in_background: true } as never);
+  } else if (task.type === 'monitor') {
+    await $.tool.call({ tool: 'Monitor', tool_use_id: task.id, command: 'tail -f log' } as never);
+  } else {
+    await $.tool.call({ tool: 'Agent', tool_use_id: task.id, prompt: 'review', run_in_background: true } as never);
+  }
+}
+
+// The notification of a background task, as the session delivers it.
+async function notify($: Engine, id: string, status: string | undefined) {
+  const tag = status === undefined ? '' : `\n<status>${status}</status>`;
+  await $.prompt.submit({
+    text: `<task-notification>\n<task-id>${id}</task-id>${tag}\n<summary>done</summary>\n</task-notification>`,
+    origin: { kind: 'task-notification' },
+    wait: false,
+  } as never);
+}
+
+// One turn that ends on its answer: a model request over `tokens` of context,
+// starting `backgroundTasks`, on a session whose usage windows read `rateLimits`.
 async function turn(
   $: Engine,
   backgroundTasks: (typeof SHELL)[],
@@ -93,15 +127,22 @@ async function turn(
     tokens = 150_000,
     rateLimits = SUBSCRIPTION,
     isMeasuredLate = false,
-  }: { tokens?: number; rateLimits?: typeof SUBSCRIPTION; isMeasuredLate?: boolean } = {},
+    reason = 'answer',
+  }: {
+    tokens?: number;
+    rateLimits?: typeof SUBSCRIPTION;
+    isMeasuredLate?: boolean;
+    reason?: 'answer' | 'aborted' | 'error';
+  } = {},
 ) {
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true });
   await $.turn.start({ text: 'go', turnId: 't1' });
+  for (const task of backgroundTasks) await start($, task);
   const step = $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 });
   for await (const _ of step);
   const measure = () => $.session.measure({ context: { tokens, window: 200_000 }, rateLimits, changed: ['context'] });
   if (!isMeasuredLate) await measure();
-  await $.classic.Stop({ stop_hook_active: false, background_tasks: backgroundTasks });
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: reason === 'aborted', turnId: 't1', reason });
   if (isMeasuredLate) await measure();
 }
 
@@ -193,8 +234,9 @@ test('keeps what the usage limits told of the account through a /clear', async (
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
   // The request after the /clear is sent before any response is measured.
   await $.turn.start({ text: 'go', turnId: 't2' });
+  await start($, SHELL);
   for await (const _ of $.turn.step({ turnId: 't2', index: 0, model: 'm', messageCount: 1 }));
-  await $.classic.Stop({ stop_hook_active: false, background_tasks: [SHELL] });
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' });
   await $.session.measure({ context: { tokens: 150_000, window: 200_000 }, rateLimits: [], changed: ['context'] });
 
   expect(await compactsAfter(clock, compacted)).toBe(4);
@@ -229,6 +271,81 @@ test('does not compact while a turn runs, or after one is interrupted', async ($
   await turn($, [SHELL]);
   await $.turn.start({ text: '', turnId: 't2' });
 
+  await clock.advance(120 * MINUTE);
+  expect(compacted.count).toBe(0);
+});
+
+for (const reason of ['aborted', 'error'] as const) {
+  test(`does not compact after a turn that ended ${reason}`, async ($, on) => {
+    const { clock, compacted } = engine(on);
+    await turn($, [SHELL], { reason });
+
+    await clock.advance(120 * MINUTE);
+    expect(compacted.count).toBe(0);
+  });
+}
+
+test('counts background work started in an earlier turn', async ($, on) => {
+  const { clock, compacted } = engine(on);
+  await turn($, [SHELL]);
+  await turn($, []);
+
+  expect(await compactsAfter(clock, compacted)).toBe(59);
+});
+
+test('forgets a background command once its notification says it ended', async ($, on) => {
+  const { clock, compacted, state } = engine(on);
+  await turn($, [SHELL, { ...SHELL, id: 'b2' }]);
+  await notify($, 'b1', 'completed');
+  expect(state.value?.backgroundTasks).toEqual([{ id: 'b2', type: 'shell' }]);
+
+  // Delivered into the turn it woke, the second ends what was left.
+  await $.turn.start({ text: '', turnId: 't2' });
+  await notify($, 'b2', 'killed');
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' });
+
+  await clock.advance(120 * MINUTE);
+  expect(compacted.count).toBe(0);
+});
+
+test('keeps a monitor through its event notifications', async ($, on) => {
+  const { clock, compacted } = engine(on);
+  await turn($, [{ id: 'm1', type: 'monitor', status: 'running', description: 'tail' }]);
+  await notify($, 'm1', undefined);
+
+  expect(await compactsAfter(clock, compacted)).toBe(59);
+});
+
+test('forgets a background command TaskStop stops', async ($, on) => {
+  const { clock, compacted, state } = engine(on);
+  await turn($, [SHELL]);
+  await $.tool.call({ tool: 'TaskStop', task_id: 'b1' } as never);
+  expect(state.value?.backgroundTasks).toEqual([]);
+
+  await clock.advance(120 * MINUTE);
+  expect(compacted.count).toBe(0);
+});
+
+test('counts a workflow running in the background', async ($, on) => {
+  const { clock, compacted, state } = engine(on);
+  await turn($, []);
+  await $.tool.call({ tool: 'Workflow', tool_use_id: 'w1', script: 'run()' } as never);
+  expect(state.value?.backgroundTasks).toEqual([{ id: 'w1', type: 'local_workflow' }]);
+  await turn($, []);
+
+  expect(await compactsAfter(clock, compacted)).toBe(59);
+});
+
+test("does not count a subagent's own background commands, nor arm on its turns", async ($, on) => {
+  const { clock, compacted, state } = engine(on);
+  await turn($, []);
+  await $.turn.start({ text: 'go', turnId: 't2' });
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'b9', agentId: 'a1', command: 'sleep 99', run_in_background: true } as never);
+  expect(state.value?.backgroundTasks).toEqual([]);
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer', agentId: 'a1' });
+  expect(state.value?.isIdle).toBe(false);
+
+  await command($, 'on');
   await clock.advance(120 * MINUTE);
   expect(compacted.count).toBe(0);
 });
@@ -339,6 +456,7 @@ test('pins nothing when it would not compact', async ($, on) => {
   await turn($, [SHELL], { tokens: 99_999 });
   expect(status.text).toBe(undefined);
 
+  await notify($, 'b1', 'completed');
   await turn($, []);
   expect(status.text).toBe(undefined);
 });

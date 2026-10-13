@@ -46,9 +46,9 @@ Set them from `/config`, or in settings:
 
 ## Notes
 
-- Background tasks are taken from the `Stop` event at the end of each turn, and checked again just before compacting:
+- A turn has ended when its answer is in (`turn.complete`). An interrupted turn, or one an API error ended, does not count, so nothing is compacted until a turn ends normally.
+- Background tasks are counted from the tool calls that start them: a `Bash` or `PowerShell` command run in the background (or moved there with Ctrl+B), a `Monitor`, a `Workflow`, a background or remote `Agent`. A subagent's own shell commands and monitors report to that subagent, so they are not counted. They are checked again just before compacting:
   - Background subagents are checked live (`$.agent.list()`); one that is not pending, running or waiting does not count.
-  - Shell commands and monitors have no live listing in the plugin API. Each sends a notification when it ends (stopped or killed too), which starts a turn, and that turn's `Stop` takes the count again.
-- An interrupted turn counts no background tasks, so nothing is compacted until a turn ends normally.
+  - Shell commands and monitors have no live listing in the plugin API. Each sends a notification when it ends (stopped or killed too), which drops it from the count, as does stopping it with `TaskStop`.
 - The context size is the input of the last model response, as the status line reports it.
 - What it tracks is kept in the session's plugin state, so a reload of the plugin (such as changing an option in `/config`) carries on where it was. `/clear` resets it.

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code';
 import type { EngineInterface, Register, Timer } from 'claude-code';
 
-import type { IdleCompactMode, IdleCompactTracker } from '../types';
+import type { IdleCompactMode, IdleCompactTask, IdleCompactTracker } from '../types';
 
 // A minute short of the prompt cache's lifetime, so the compaction's request
 // still reads the cache.
@@ -10,6 +10,8 @@ const DEFAULT_MIN_CONTEXT_TOKENS = 100_000;
 const MODES: readonly IdleCompactMode[] = ['auto', 'on', 'off'];
 // A subagent still doing work; `idle` is a teammate waiting on a message.
 const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting']);
+// How a task notification says its task has ended.
+const ENDED = new Set(['completed', 'failed', 'killed']);
 
 // `idleMinutes` is null when it follows the prompt cache's lifetime.
 type Limits = { idleMinutes: number | null; minContextTokens: number };
@@ -133,9 +135,65 @@ async function arm($: EngineInterface, limits: Limits) {
   await showSchedule($, limits);
 }
 
-// The tasks from the last turn's snapshot still running now. Subagents are
-// checked live; shell and monitor tasks have no live listing, but each sends
-// a notification when it ends (killed too), whose turn retakes the snapshot.
+// Adds a task started in the background, or forgets the ones that ended.
+function addTask($: EngineInterface, task: IdleCompactTask) {
+  return update($, tracker, current => ({
+    ...current,
+    backgroundTasks: [...current.backgroundTasks.filter(each => each.id !== task.id), task],
+  }));
+}
+
+function endTasks($: EngineInterface, ids: readonly string[]) {
+  return update($, tracker, current => ({
+    ...current,
+    backgroundTasks: current.backgroundTasks.filter(each => !ids.includes(each.id)),
+  }));
+}
+
+// The background task a tool call started, from its result: a shell command
+// run in the background (or moved there with Ctrl+B), a monitor, a workflow,
+// a background or remote subagent.
+function startedTask(tool: string, result: unknown): IdleCompactTask | undefined {
+  if (typeof result !== 'object' || result === null) return undefined;
+  const fields = result as Record<string, unknown>;
+  const text = (key: string) => (typeof fields[key] === 'string' ? (fields[key] as string) : undefined);
+  if (tool === 'Bash' || tool === 'PowerShell') {
+    const id = text('backgroundTaskId');
+    return id === undefined ? undefined : { id, type: 'shell' };
+  }
+  if (tool === 'Monitor') {
+    const id = text('taskId');
+    return id === undefined ? undefined : { id, type: 'monitor' };
+  }
+  if (tool === 'Workflow') {
+    const id = text('taskId');
+    return id === undefined ? undefined : { id, type: text('taskType') ?? 'local_workflow' };
+  }
+  if (tool === 'Agent') {
+    const agentId = text('agentId');
+    if (fields.status === 'async_launched' && agentId !== undefined) return { id: agentId, type: 'subagent' };
+    const taskId = text('taskId');
+    if (fields.status === 'remote_launched' && taskId !== undefined) return { id: taskId, type: 'remote_agent' };
+  }
+  return undefined;
+}
+
+// The tasks a task notification reports as ended: each `<task-notification>`
+// block's `<task-id>`, when its `<status>` is one a task ends on. A monitor's
+// events come the same way, with no such status, and leave it running.
+function endedTasks(text: string) {
+  const ids: string[] = [];
+  for (const [block] of text.matchAll(/<task-notification>[\s\S]*?<\/task-notification>/g)) {
+    const id = /<task-id>\s*([^<]*?)\s*<\/task-id>/.exec(block)?.[1];
+    const status = /<status>\s*([^<]*?)\s*<\/status>/.exec(block)?.[1];
+    if (id && status !== undefined && ENDED.has(status)) ids.push(id);
+  }
+  return ids;
+}
+
+// The tracked tasks still running now. Subagents are checked live; shell and
+// monitor tasks have no live listing, but each sends a notification when it
+// ends (killed too), which forgets it.
 async function runningTasks($: EngineInterface, tasks: IdleCompactTracker['backgroundTasks']) {
   if (!tasks.some(task => task.type === 'subagent')) return tasks;
   const activeAgents = new Set(
@@ -262,7 +320,8 @@ export const register: Register = (on, options) => {
   // Whether the session is on a subscription, and within its plan, comes with
   // each response's rate limits: none off a subscription. The first tells the
   // lifetime of the cache the session's first request wrote. Arming again
-  // moves a timer set before then, whichever of this and Stop comes first.
+  // moves a timer set before then, whichever of this and the turn's end
+  // comes first.
   on('session.measure', async ($, e, next) => {
     await restore($);
     await track($, {
@@ -275,11 +334,9 @@ export const register: Register = (on, options) => {
   });
 
   on('turn.start', async ($, e, next) => {
-    // Retaken when the turn stops, so none count while it runs; an
-    // interrupted turn has no Stop and leaves none counted.
     await restore($);
     disarm($);
-    await track($, { backgroundTasks: [], isIdle: false });
+    await track($, { isIdle: false });
     return next(e);
   });
 
@@ -296,14 +353,41 @@ export const register: Register = (on, options) => {
     return yield* next(e);
   });
 
-  // Tracking is best effort: should it fail, the turn still stops as it would
-  // have, and the next turn's Stop takes the count again.
-  on('classic.Stop', async ($, e, next) => {
-    if (e.agent_id === undefined) {
+  // A main-loop turn that ended on its answer leaves the session idle; an
+  // interrupted turn, or one an API error ended, leaves it waiting on the
+  // person and is not counted. Tracking is best effort: should it fail, the
+  // turn still ends as it would have.
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e);
+    if (e.agentId === undefined && e.reason !== 'aborted' && e.reason !== 'error') {
       await restore($);
-      const backgroundTasks = (e.background_tasks ?? []).map(({ id, type }) => ({ id, type }));
-      await track($, { backgroundTasks, isIdle: true });
+      await track($, { isIdle: true });
       await arm($, limits);
+    }
+    return result;
+  }).catch(($, e, next) => next(e));
+
+  // Background work is counted from the calls that start it, and forgotten
+  // when TaskStop stops it. A subagent's own shells and monitors notify that
+  // subagent, not the main conversation, so only the subagents it starts
+  // count, which are checked live.
+  on('tool.call', async ($, e, next) => {
+    const ran = await next(e);
+    if (ran.deny === undefined && ran.isError !== true) {
+      const started = startedTask(e.tool, ran.result);
+      if (started !== undefined && (e.agentId === undefined || started.type === 'subagent')) await addTask($, started);
+      const stopped = e.tool === 'TaskStop' ? (ran.result as { task_id?: unknown } | undefined)?.task_id : undefined;
+      if (typeof stopped === 'string') await endTasks($, [stopped]);
+    }
+    return ran;
+  }).catch(($, e, next) => next(e));
+
+  // A task's notification, whether it wakes the idle session or reaches a
+  // running turn, tells when it ended.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'task-notification') {
+      const ended = endedTasks(e.text);
+      if (ended.length > 0) await endTasks($, ended);
     }
     return next(e);
   }).catch(($, e, next) => next(e));
