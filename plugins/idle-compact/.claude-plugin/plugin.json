@@ -1,6 +1,6 @@
 {
   "name": "idle-compact",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Runs /compact while the session sits idle waiting on background work, right before the prompt cache expires.",
   "author": { "name": "Michael McKnight" },
   "types": "./types/index.d.ts",

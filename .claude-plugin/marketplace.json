@@ -14,7 +14,7 @@
       "name": "idle-compact",
       "source": "./plugins/idle-compact",
       "description": "Runs /compact while the session sits idle waiting on background work, right before the prompt cache expires.",
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     {
       "name": "context-bar",

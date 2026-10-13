@@ -12,8 +12,8 @@ export type IdleCompactTracker = {
   lastModelCallAt: number | null;
   // The input tokens of the last response; null until one is measured.
   contextTokens: number | null;
-  // The background tasks the last finished turn left in flight; emptied when
-  // a turn starts, so empty while one runs and after one is interrupted.
+  // The background tasks in flight: added by the tool call that started each,
+  // dropped when its notification says it ended or TaskStop stops it.
   backgroundTasks: IdleCompactTask[];
   // One compaction per idle stretch: the next model request re-arms it.
   hasCompacted: boolean;
