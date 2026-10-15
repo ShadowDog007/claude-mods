@@ -24,6 +24,10 @@ const LAST_TURN_COLORS = ['warning', 'suggestion', 'success', 'permission'];
 // the breakdown leaves their rows out.
 const MESSAGES_COLOR = 'purple_FOR_SUBAGENTS_ONLY';
 const FREE_COLOR = 'promptBorder';
+// After a /clear, how often and how many times to look for the fresh
+// conversation before measuring whatever is there.
+const CLEAR_POLL_MS = 100;
+const CLEAR_POLLS = 10;
 
 // The short names for /context's rows, by the start of the row's name, in the
 // order the bar draws them. A row named otherwise goes by its first word, just
@@ -36,6 +40,20 @@ const SHORT_NAMES: [prefix: string, name: string][] = [
   ['Memory', 'Memory'],
   ['Messages', 'Messages'],
 ];
+
+// Measures the conversation a /clear started, once the engine has bound it
+// after the ending one's `session.end`: at once, then every CLEAR_POLL_MS
+// while the session still goes by the ended one's id, CLEAR_POLLS in all.
+function refreshAfterClear($: EngineInterface, endedId: string, polls = CLEAR_POLLS) {
+  $.clock.after(polls === CLEAR_POLLS ? 0 : CLEAR_POLL_MS, async () => {
+    try {
+      if ((await $.session.id()) === endedId && polls > 1) return refreshAfterClear($, endedId, polls - 1);
+    } catch {
+      // Measure what is there.
+    }
+    await refresh($);
+  });
+}
 
 function inputSide(usage: ModelUsage) {
   return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
@@ -284,8 +302,7 @@ export const register: Register = on => {
     return result;
   });
 
-  // A /clear starts the conversation over, and no `session.start` follows it:
-  // the classic SessionStart that does is when the fresh one can be measured.
+  // A /clear starts the conversation over, and no `session.start` follows it.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       await update($, breakdown, () => null);
@@ -294,12 +311,8 @@ export const register: Register = on => {
       await update($, turn, () => null);
       await update($, counted, () => null);
     }
-    return next(e);
-  });
-
-  on('classic.SessionStart', async ($, e, next) => {
     const result = await next(e);
-    if (e.source === 'clear') await refresh($);
+    if (e.reason === 'clear') refreshAfterClear($, e.sessionId);
     return result;
   });
 

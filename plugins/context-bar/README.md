@@ -53,4 +53,4 @@ The list is read from the context as it stands when drawn, so it holds what a co
 - Turn and step figures come from the API's reported usage of each main-conversation request (uncached, cache-read and cache-written input together); subagents' requests are not counted.
 - Costs are the session's running total as `/cost` and the status line total it; a turn's cost is how much that total grew during it, so it includes its subagents' requests.
 - Tool schemas loaded on demand sit outside the window and are left out.
-- What it shows is kept in the session's plugin state, so a reload draws at once. `/clear` resets everything and draws the fresh conversation's bar at once (where an organization manages Claude Code, after the next response instead).
+- What it shows is kept in the session's plugin state, so a reload draws at once. `/clear` resets everything and draws the fresh conversation's bar at once.

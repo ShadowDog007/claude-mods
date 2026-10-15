@@ -1,6 +1,6 @@
 import type { ContextCategory, ModelUsage, On } from 'claude-code';
 import type { Engine } from 'claude-code/testing';
-import { expect, test } from 'claude-code/testing';
+import { expect, mock, test } from 'claude-code/testing';
 
 import { allocate, legend, segments, turnLine } from './register';
 import {
@@ -72,7 +72,9 @@ function engine(on: On) {
   on('session.start', (_$, e) => ({ cwd: e.cwd }));
   on('session.measure', (_$, e) => ({ changed: e.changed }));
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }));
-  on('classic.SessionStart', () => ({}));
+  // The session's id: `s1`, then `s2` once a /clear has started it over.
+  const session = { id: 's1' };
+  on('session.id', () => ({ value: session.id }));
   on('turn.start', (_$, e) => ({ turnId: e.turnId }));
   on('turn.complete', () => ({ text: '' }));
   on('ui.log', () => ({ value: undefined }));
@@ -138,7 +140,7 @@ function engine(on: On) {
       },
     };
   });
-  return { contexts, ledger, messages, opened, window };
+  return { contexts, ledger, messages, opened, session, window };
 }
 
 async function start($: Engine) {
@@ -358,10 +360,17 @@ test('forgets the conversation on /clear', async ($, on) => {
 });
 
 test('draws the bar again once a /clear has started the conversation over', async ($, on) => {
+  const clock = mock.clock(on);
   const stub = engine(on);
   await turn($, stub, [41_000]);
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
-  await $.classic.SessionStart({ source: 'clear' });
+  // The fresh conversation is not bound yet: nothing is drawn.
+  await clock.settle();
+  const before = await $.ui.mount(band());
+  expect(await before.find({ type: 'Text', text: /System/ })).toBe(undefined);
+  await before.unmount();
+  stub.session.id = 's2';
+  await clock.advance(100);
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(band(80, false, surface));
     expect(await ui.find({ type: 'Text', text: /60k\/200k \(30%\)/ })).toBeDefined();
