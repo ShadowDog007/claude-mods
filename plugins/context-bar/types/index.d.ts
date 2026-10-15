@@ -16,6 +16,11 @@ export type ContextBarBreakdown = {
   window: number;
 };
 
+// The rows of the window that stay the same until the session's tools, skills
+// or memory change, as last counted with the token-count API, and the
+// summary's estimate of them then (`basis`), which says when to count again.
+export type ContextBarCounted = { basis: string; slices: ContextBarSlice[] };
+
 // One model request of the main conversation: the input side it was answered
 // over (uncached, cache-read and cache-written together) and what it generated.
 export type ContextBarStep = { context: number; output: number };
@@ -43,6 +48,7 @@ declare module 'claude-code' {
       // What the session has cost so far, in US dollars, as /cost totals it.
       cost: number | null;
       turn: ContextBarTurn | null;
+      counted: ContextBarCounted | null;
       // The /context-tools row expanded, by its call's id.
       expandedTool: string | null;
     };

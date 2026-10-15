@@ -48,8 +48,9 @@ The list is read from the context as it stands when drawn, so it holds what a co
 
 ## Notes
 
-- The categories are the engine's local estimate (`/context`'s summary breakdown), refreshed after every response. It sends no requests, so it costs nothing. The estimate is measured against the compaction window and need not match the status line's figure exactly.
+- The categories match `/context`, measured against the compaction window and refreshed after every response. The system prompt, tools, MCP tools, agents, skills and memory files are counted with the token-count API, as `/context` counts them, and counted again only when the engine's local estimate of them changes (a tool or memory file loaded), so most responses send no requests. The messages are what the last response was answered over beyond those, so the total matches the status line's figure; before the first response, and after a `/clear` or a compaction, they are the local estimate.
+- The free space is what is left of the window past the content and the autocompact buffer. The buffer shrinks as the content reaches into it, so the bar never runs past the window.
 - Turn and step figures come from the API's reported usage of each main-conversation request (uncached, cache-read and cache-written input together); subagents' requests are not counted.
 - Costs are the session's running total as `/cost` and the status line total it; a turn's cost is how much that total grew during it, so it includes its subagents' requests.
 - Tool schemas loaded on demand sit outside the window and are left out.
-- What it shows is kept in the session's plugin state, so a reload draws at once. `/clear` resets everything.
+- What it shows is kept in the session's plugin state, so a reload draws at once. `/clear` resets everything and draws the fresh conversation's bar at once.
