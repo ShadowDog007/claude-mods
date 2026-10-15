@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code';
-import type { EngineInterface, ModelUsage, Register } from 'claude-code';
+import type { ContextCategory, EngineInterface, ModelUsage, Register, SessionContextBreakdown } from 'claude-code';
 
 import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
 import { desktopBand } from './desktop';
@@ -12,6 +12,7 @@ const breakdown = atom({ plugin: 'context-bar', key: 'breakdown' } as const, nul
 const measured = atom({ plugin: 'context-bar', key: 'measured' } as const, null);
 const cost = atom({ plugin: 'context-bar', key: 'cost' } as const, null);
 const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
+const counted = atom({ plugin: 'context-bar', key: 'counted' } as const, null);
 
 // The steps the turn line lists, newest last.
 const MAX_STEPS_SHOWN = 8;
@@ -19,6 +20,10 @@ const MAX_STEPS_SHOWN = 8;
 const MIN_BAR_CELLS = 10;
 // What the last turn is drawn in: the first of these no other segment uses.
 const LAST_TURN_COLORS = ['warning', 'suggestion', 'success', 'permission'];
+// The colours /context draws the conversation and the free space in, for when
+// the breakdown leaves their rows out.
+const MESSAGES_COLOR = 'purple_FOR_SUBAGENTS_ONLY';
+const FREE_COLOR = 'promptBorder';
 
 // The short names for /context's rows, by the start of the row's name, in the
 // order the bar draws them. A row named otherwise goes by its first word, just
@@ -32,26 +37,80 @@ const SHORT_NAMES: [prefix: string, name: string][] = [
   ['Messages', 'Messages'],
 ];
 
-// Re-estimates the window by category. `summary` counts locally and sends no
-// request, so it is cheap enough to run after every response.
+function inputSide(usage: ModelUsage) {
+  return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+}
+
+// The rows that stay the same until the session's tools, skills or memory
+// change: everything in use but the conversation.
+function isFixed(category: ContextCategory) {
+  return category.kind === 'used' && !category.name.startsWith('Messages');
+}
+
+function slice({ name, tokens, color, kind }: ContextCategory): ContextBarSlice {
+  return { name, tokens, color, kind: kind as ContextBarSlice['kind'] };
+}
+
+// The fixed rows counted with the token-count API, as /context counts them.
+// The summary's local estimate of the tool schemas runs well over what they
+// really take, so it is only trusted to say when they changed.
+async function countFixed($: EngineInterface, estimated: ContextCategory[]) {
+  try {
+    const counted = (await $.session.usage({ breakdown: 'full' })).context.breakdown;
+    if (counted !== undefined) return counted.categories.filter(isFixed).map(slice);
+  } catch (error) {
+    $.ui.log(`context-bar: could not count the context: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return estimated.map(slice);
+}
+
+// The window by category: the fixed rows as last counted, counted again
+// whenever their estimate moves; the conversation as what the last response
+// was answered over beyond them (the summary's estimate before there is one,
+// in a fresh, cleared or just-compacted session); and the free space as what
+// is left of the window past both and the compaction buffer.
+async function measureWindow($: EngineInterface, rows: SessionContextBreakdown): Promise<ContextBarBreakdown> {
+  const estimated = rows.categories.filter(isFixed);
+  const basis = JSON.stringify(estimated.map(({ name, tokens }) => [name, tokens]));
+  let known = await read($, counted);
+  if (known?.basis !== basis) {
+    known = { basis, slices: await countFixed($, estimated) };
+    await update($, counted, () => known);
+  }
+  const window = rows.rawMaxTokens;
+  const fixed = known.slices.reduce((sum, each) => sum + each.tokens, 0);
+  const conversation = rows.categories.find(category => category.kind === 'used' && !isFixed(category));
+  const messages =
+    rows.apiUsage === null ? (conversation?.tokens ?? 0) : Math.max(inputSide(rows.apiUsage) - fixed, 0);
+  const used = fixed + messages;
+  const freeRow = rows.categories.find(category => category.kind === 'free');
+  const bufferRow = rows.categories.find(category => category.kind === 'buffer');
+  // The buffer is the window past the compaction threshold, so content that
+  // reaches into it leaves that much less of it.
+  const buffer = Math.min(bufferRow?.tokens ?? 0, Math.max(window - used, 0));
+  const slices: ContextBarSlice[] = [
+    ...known.slices,
+    { name: 'Messages', tokens: messages, color: conversation?.color ?? MESSAGES_COLOR, kind: 'used' },
+    { name: 'Free space', tokens: Math.max(window - used - buffer, 0), color: freeRow?.color ?? FREE_COLOR, kind: 'free' },
+  ];
+  if (bufferRow !== undefined) slices.push({ ...slice(bufferRow), tokens: buffer });
+  return { slices: slices.filter(each => each.tokens > 0), window };
+}
+
+// Re-measures the window by category. `summary` counts locally and sends no
+// request, so it is cheap enough to run after every response; the fixed rows
+// are counted again only when it says they changed.
 async function refresh($: EngineInterface) {
   try {
     const usage = await $.session.usage({ breakdown: 'summary' });
     await update($, cost, () => usage.cost?.usd ?? null);
     const rows = usage.context.breakdown;
     if (rows === undefined) return;
-    const slices: ContextBarSlice[] = [];
-    for (const { name, tokens, color, kind } of rows.categories) {
-      if (kind !== 'deferred' && tokens > 0) slices.push({ name, tokens, color, kind });
-    }
-    await update($, breakdown, () => ({ slices, window: rows.rawMaxTokens }));
+    const measuredWindow = await measureWindow($, rows);
+    await update($, breakdown, () => measuredWindow);
   } catch (error) {
     $.ui.log(`context-bar: could not break the context down: ${error instanceof Error ? error.message : String(error)}`);
   }
-}
-
-function inputSide(usage: ModelUsage) {
-  return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
 }
 
 // What the turn has added to the context so far, from where it started (or
@@ -151,7 +210,7 @@ export function segments(rows: ContextBarBreakdown, growth: number | null): Segm
     .sort((a, b) => rank(a) - rank(b))
     .forEach(add);
   const tail = result.at(-1);
-  if (tail !== undefined && growth !== null && growth > 0) {
+  if (tail?.name === 'Messages' && growth !== null && growth > 0) {
     const carved = Math.min(growth, tail.tokens);
     tail.tokens -= carved;
     result.push({
@@ -225,15 +284,23 @@ export const register: Register = on => {
     return result;
   });
 
-  // A /clear starts the conversation over.
+  // A /clear starts the conversation over, and no `session.start` follows it:
+  // the classic SessionStart that does is when the fresh one can be measured.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       await update($, breakdown, () => null);
       await update($, measured, () => null);
       await update($, cost, () => null);
       await update($, turn, () => null);
+      await update($, counted, () => null);
     }
     return next(e);
+  });
+
+  on('classic.SessionStart', async ($, e, next) => {
+    const result = await next(e);
+    if (e.source === 'clear') await refresh($);
+    return result;
   });
 
   registerTools(on);

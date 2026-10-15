@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "A collection of Claude Code plugins by ShadowDog007",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "pluginRoot": "./plugins"
   },
   "plugins": [
@@ -20,7 +20,7 @@
       "name": "context-bar",
       "source": "./plugins/context-bar",
       "description": "A coloured bar above the prompt showing what fills the context window, by category, and how much the last turn and its steps added.",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ]
 }

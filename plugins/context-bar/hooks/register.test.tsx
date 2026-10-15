@@ -1,4 +1,4 @@
-import type { ContextCategory, On } from 'claude-code';
+import type { ContextCategory, ModelUsage, On } from 'claude-code';
 import type { Engine } from 'claude-code/testing';
 import { expect, test } from 'claude-code/testing';
 
@@ -46,10 +46,19 @@ const ROWS = {
 };
 
 // Stands in for the engine beneath the plugin: a session whose context breaks
-// down as `CATEGORIES` and has cost `ledger.usd`, and a model whose every
-// request is answered over the next of `contexts` tokens of input.
+// down as `window.summary` estimates it and `window.full` counts it (each
+// `CATEGORIES` until a test says otherwise, `window.counts` the full ones
+// asked for), whose last response was answered over `window.apiUsage`, and has
+// cost `ledger.usd`; and a model whose every request is answered over the
+// next of `contexts` tokens of input.
 function engine(on: On) {
   const ledger = { usd: 1 };
+  const window = {
+    summary: CATEGORIES,
+    full: CATEGORIES,
+    apiUsage: null as ModelUsage | null,
+    counts: 0,
+  };
   const state = new Map<string, { value: unknown; version: number }>();
   on('state.get', (_$, e) => {
     const entry = state.get(e.key);
@@ -63,6 +72,7 @@ function engine(on: On) {
   on('session.start', (_$, e) => ({ cwd: e.cwd }));
   on('session.measure', (_$, e) => ({ changed: e.changed }));
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }));
+  on('classic.SessionStart', () => ({}));
   on('turn.start', (_$, e) => ({ turnId: e.turnId }));
   on('turn.complete', () => ({ text: '' }));
   on('ui.log', () => ({ value: undefined }));
@@ -71,8 +81,9 @@ function engine(on: On) {
     const { Box } = $.ui.resolve(e);
     return <Box key="engine" />;
   });
-  on('session.usage', () => ({
-    value: {
+  on('session.usage', (_$, e) => {
+    if (e.breakdown === 'full') window.counts++;
+    return { value: {
       startedAt: 0,
       rateLimits: [],
       cost: { usd: ledger.usd },
@@ -81,7 +92,7 @@ function engine(on: On) {
         window: WINDOW,
         percent: 30,
         breakdown: {
-          categories: CATEGORIES,
+          categories: e.breakdown === 'full' ? window.full : window.summary,
           totalTokens: 60_000,
           maxTokens: WINDOW,
           rawMaxTokens: WINDOW,
@@ -93,11 +104,11 @@ function engine(on: On) {
           mcpTools: [],
           agents: [],
           isAutoCompactEnabled: true,
-          apiUsage: null,
+          apiUsage: window.apiUsage,
         },
       },
-    },
-  }));
+    } };
+  });
   on('command.register', (_$, e) => ({ value: { command: e.name } }));
   // The conversation in API form, as `messages` holds it, in /repo.
   const messages: { role: 'user' | 'assistant'; content: { type: string; [field: string]: unknown }[] }[] = [];
@@ -127,7 +138,7 @@ function engine(on: On) {
       },
     };
   });
-  return { contexts, ledger, messages, opened };
+  return { contexts, ledger, messages, opened, window };
 }
 
 async function start($: Engine) {
@@ -344,6 +355,95 @@ test('forgets the conversation on /clear', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
     await ui.unmount();
   }
+});
+
+test('draws the bar again once a /clear has started the conversation over', async ($, on) => {
+  const stub = engine(on);
+  await turn($, stub, [41_000]);
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } });
+  await $.classic.SessionStart({ source: 'clear' });
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(band(80, false, surface));
+    expect(await ui.find({ type: 'Text', text: /60k\/200k \(30%\)/ })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: /turn:/ })).toBe(undefined);
+    await ui.unmount();
+  }
+});
+
+// The answer to a request over `tokens` of input.
+function answered(tokens: number): ModelUsage {
+  return {
+    input_tokens: 10,
+    cache_read_input_tokens: tokens - 110,
+    cache_creation_input_tokens: 100,
+    output_tokens: 500,
+  };
+}
+
+// The summary's local estimate after a response: the tool schemas well over
+// what they take, and the conversation's row reconciled away beneath them.
+const ESTIMATED = [
+  row('System prompt', 3_000, 'promptBorder'),
+  row('System tools', 30_000, 'inactive'),
+  row('Skills', 2_000, 'warning'),
+  row('System tools (deferred)', 9_000, 'inactive', 'deferred'),
+  row('Autocompact buffer', 33_000, 'inactive', 'buffer'),
+  row('Free space', 132_000, 'promptBorder', 'free'),
+];
+const COUNTED = [
+  row('System prompt', 3_000, 'promptBorder'),
+  row('System tools', 17_000, 'inactive'),
+  row('Skills', 2_000, 'warning'),
+  row('Messages', 1_000, 'purple_FOR_SUBAGENTS_ONLY'),
+  row('System tools (deferred)', 9_000, 'inactive', 'deferred'),
+  row('Autocompact buffer', 33_000, 'inactive', 'buffer'),
+  row('Free space', 144_000, 'promptBorder', 'free'),
+];
+
+test('counts the system rows as /context does, the conversation and free space from the last response', async ($, on) => {
+  const stub = engine(on);
+  stub.window.summary = ESTIMATED;
+  stub.window.full = COUNTED;
+  stub.window.apiUsage = answered(52_000);
+  await start($);
+  await measure($, 52_000, 1);
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(band(120, false, surface));
+    const legendText = (await ui.find({ key: 'legend' }))!.text;
+    for (const label of ['System 20k', 'Skills 2.0k', 'Messages 30k', 'Free 115k', 'Buffer 33k']) {
+      expect(legendText).toContain(label);
+    }
+    expect(await ui.find({ type: 'Text', text: /52k\/200k \(26%\)/ })).toBeDefined();
+    await ui.unmount();
+  }
+});
+
+test('counts the system rows again only when their estimate moves', async ($, on) => {
+  const stub = engine(on);
+  stub.window.apiUsage = answered(60_000);
+  await start($);
+  await measure($, 60_000, 1);
+  await measure($, 61_000, 1);
+  expect(stub.window.counts).toBe(1);
+  // A tool loaded: the estimate moves, and the rows are counted again.
+  stub.window.summary = CATEGORIES.map(each => (each.name === 'System tools' ? { ...each, tokens: 18_000 } : each));
+  await measure($, 62_000, 1);
+  expect(stub.window.counts).toBe(2);
+});
+
+test('shrinks the buffer as the content reaches into it, never drawing past the window', async ($, on) => {
+  const stub = engine(on);
+  stub.window.apiUsage = answered(180_000);
+  await start($);
+  await measure($, 180_000, 1);
+  const ui = await $.ui.mount(band(120));
+  const legendText = (await ui.find({ key: 'legend' }))!.text;
+  expect(legendText).toContain('Messages 154k');
+  expect(legendText).toContain('Buffer 20k');
+  expect(legendText).not.toContain('Free');
+  expect(await ui.find({ type: 'Text', text: /180k\/200k \(90%\)/ })).toBeDefined();
+  await ui.unmount();
 });
 
 test('says what a tool call set out to do', () => {
