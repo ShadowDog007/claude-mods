@@ -15,6 +15,15 @@ Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · $0.30 · steps +
 
 The band yields to a survey, and can be collapsed and restored like any band above the prompt (`ctrl+x ctrl+a`, or the `[-]`/`[+]` at its right edge).
 
+## Subagents
+
+When you open a subagent or teammate's transcript from the tasks list, the band switches to that agent's context, with its name at the front of the summary (`Explore the hooks · 30k/200k (15%) · $1.30`); going back to the main conversation switches it back.
+
+- The total is exact: it is what the agent's latest request was answered over, as the API reported it, the same figure the main conversation's turn line uses.
+- The breakdown is coarser than the main conversation's, because `/context` can only break down the main conversation. `System` is what the agent's first request was answered over (its system prompt, its tools and the task it was given) and `Messages` is everything it has gathered since, so there are no MCP, skills or memory rows.
+- The turn line shows the agent's latest turn, which for a subagent is its whole run. Its first step shows `?`, as nothing came before it, and no cost is shown, since the session's cost cannot be split between the agent and whatever ran beside it.
+- Until the agent's first response comes back, the band says it has none yet.
+
 In the desktop app the band has a view of its own: the bar is laid out by the app from each segment's share of the window in solid theme colours, the free space filled rather than shaded, so it fills the band at any font size. The legend puts a swatch beside each name and wraps rather than dropping what does not fit, and the turn line wraps too.
 
 ## `/context-tools`
@@ -50,7 +59,9 @@ The list is read from the context as it stands when drawn, so it holds what a co
 
 - The categories match `/context`, measured against the compaction window and refreshed after every response. The system prompt, tools, MCP tools, agents, skills and memory files are counted with the token-count API, as `/context` counts them, and counted again only when the engine's local estimate of them changes (a tool or memory file loaded), so most responses send no requests. The messages are what the last response was answered over beyond those, so the total matches the status line's figure; before the first response, and after a `/clear` or a compaction, they are the local estimate.
 - The free space is what is left of the window past the content and the autocompact buffer. The buffer shrinks as the content reaches into it, so the bar never runs past the window.
-- Turn and step figures come from the API's reported usage of each main-conversation request (uncached, cache-read and cache-written input together); subagents' requests are not counted.
+- Turn and step figures come from the API's reported usage of each request (uncached, cache-read and cache-written input together); a subagent's requests count only towards its own band, never the main conversation's.
+- A subagent's band is measured against the main conversation's window and autocompact buffer, since the plugin cannot learn a window for each model. A subagent on a model with a different window (say, a 200k model under a 1M-window main conversation) shows the wrong free space and percentage, though its tokens are still right.
+- A subagent is only seen from the plugin's loading on: one that was already running when the plugin loaded counts its first request seen as its `System`, and a teammate running in a terminal pane of its own makes no requests here, so its band never gets past having no response.
 - Costs are the session's running total as `/cost` and the status line total it; a turn's cost is how much that total grew during it, so it includes its subagents' requests.
 - Tool schemas loaded on demand sit outside the window and are left out.
 - What it shows is kept in the session's plugin state, so a reload draws at once. `/clear` resets everything and draws the fresh conversation's bar at once.
