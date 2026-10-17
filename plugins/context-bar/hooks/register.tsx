@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code';
 import type { ContextCategory, EngineInterface, ModelUsage, Register, SessionContextBreakdown } from 'claude-code';
 
-import type { ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
+import type { ContextBarAgent, ContextBarBreakdown, ContextBarSlice, ContextBarStep, ContextBarTurn } from '../types';
 import { desktopBand } from './desktop';
 import type { BandSegment as Segment } from './desktop';
 import { formatTokens, registerTools } from './tools';
@@ -13,6 +13,7 @@ const measured = atom({ plugin: 'context-bar', key: 'measured' } as const, null)
 const cost = atom({ plugin: 'context-bar', key: 'cost' } as const, null);
 const turn = atom({ plugin: 'context-bar', key: 'turn' } as const, null);
 const counted = atom({ plugin: 'context-bar', key: 'counted' } as const, null);
+const agents = atom({ plugin: 'context-bar', key: 'agents' } as const, null);
 
 // The steps the turn line lists, newest last.
 const MAX_STEPS_SHOWN = 8;
@@ -24,6 +25,7 @@ const LAST_TURN_COLORS = ['warning', 'suggestion', 'success', 'permission'];
 // the breakdown leaves their rows out.
 const MESSAGES_COLOR = 'purple_FOR_SUBAGENTS_ONLY';
 const FREE_COLOR = 'promptBorder';
+const SYSTEM_COLOR = 'promptBorder';
 // After a /clear, how often and how many times to look for the fresh
 // conversation before measuring whatever is there.
 const CLEAR_POLL_MS = 100;
@@ -112,7 +114,79 @@ async function measureWindow($: EngineInterface, rows: SessionContextBreakdown):
     { name: 'Free space', tokens: Math.max(window - used - buffer, 0), color: freeRow?.color ?? FREE_COLOR, kind: 'free' },
   ];
   if (bufferRow !== undefined) slices.push({ ...slice(bufferRow), tokens: buffer });
-  return { slices: slices.filter(each => each.tokens > 0), window };
+  return { slices: slices.filter(each => each.tokens > 0), window, buffer: bufferRow?.tokens ?? 0 };
+}
+
+// The context an agent was last answered over, or null before its first answer.
+function agentContext(agent: ContextBarAgent) {
+  return agent.turn.steps.at(-1)?.context ?? agent.turn.contextBefore;
+}
+
+// An agent's window, measured against the main conversation's: what its first
+// request was answered over (its system prompt, tools and task) as its system
+// rows, what it has gathered since as its messages, then the free space and
+// the buffer as the main conversation's are worked out. Null before it has
+// been answered.
+export function agentBreakdown(main: ContextBarBreakdown, agent: ContextBarAgent): ContextBarBreakdown | null {
+  const used = agentContext(agent);
+  if (used === null || agent.start === null) return null;
+  const { window } = main;
+  const colorOf = (match: (slice: ContextBarSlice) => boolean, fallback: string) =>
+    main.slices.find(match)?.color ?? fallback;
+  const system = Math.min(agent.start, used);
+  const bufferSize = main.buffer ?? main.slices.find(slice => slice.kind === 'buffer')?.tokens ?? 0;
+  const buffer = Math.min(bufferSize, Math.max(window - used, 0));
+  const slices: ContextBarSlice[] = [
+    {
+      name: 'System prompt, tools and task',
+      tokens: system,
+      color: colorOf(slice => slice.name.startsWith('System'), SYSTEM_COLOR),
+      kind: 'used',
+    },
+    {
+      name: 'Messages',
+      tokens: used - system,
+      color: colorOf(slice => slice.name === 'Messages', MESSAGES_COLOR),
+      kind: 'used',
+    },
+    {
+      name: 'Free space',
+      tokens: Math.max(window - used - buffer, 0),
+      color: colorOf(slice => slice.kind === 'free', FREE_COLOR),
+      kind: 'free',
+    },
+    { name: 'Autocompact buffer', tokens: buffer, color: colorOf(slice => slice.kind === 'buffer', 'inactive'), kind: 'buffer' },
+  ];
+  return { slices: slices.filter(each => each.tokens > 0), window, buffer: bufferSize };
+}
+
+// What the band calls the agent in view: its name, else its task, else its type.
+async function agentLabel($: EngineInterface, agentId: string) {
+  try {
+    const found = (await $.agent.list()).find(agent => agent.id === agentId);
+    if (found !== undefined) return found.name ?? (found.description || found.type);
+  } catch {
+    // Go by the id.
+  }
+  return agentId;
+}
+
+// Applies `change` to the record of agent `agentId`, a fresh one if none is kept.
+async function updateAgent($: EngineInterface, agentId: string, change: (agent: ContextBarAgent) => ContextBarAgent) {
+  await update($, agents, current => {
+    const agent = current?.[agentId] ?? {
+      start: null,
+      turn: { contextBefore: null, steps: [], compactedAt: null, costBefore: null, isRunning: true },
+    };
+    return { ...current, [agentId]: change(agent) };
+  });
+}
+
+// Adds a step to a turn; the context only shrinks when a compaction runs mid-turn.
+function addStep(current: ContextBarTurn, step: ContextBarStep): ContextBarTurn {
+  const previous = current.steps.at(-1)?.context ?? current.contextBefore;
+  const compactedAt = previous !== null && step.context < previous ? current.steps.length : current.compactedAt;
+  return { ...current, steps: [...current.steps, step], compactedAt };
 }
 
 // Re-measures the window by category. `summary` counts locally and sends no
@@ -310,6 +384,7 @@ export const register: Register = on => {
       await update($, cost, () => null);
       await update($, turn, () => null);
       await update($, counted, () => null);
+      await update($, agents, () => null);
     }
     const result = await next(e);
     if (e.reason === 'clear') refreshAfterClear($, e.sessionId);
@@ -331,6 +406,16 @@ export const register: Register = on => {
   });
 
   on('turn.start', async ($, e, next) => {
+    const { agentId } = e;
+    if (agentId !== undefined) {
+      // An agent's turn starts from where its last one left it; its cost is
+      // not told apart from the session's.
+      await updateAgent($, agentId, agent => ({
+        ...agent,
+        turn: { contextBefore: agentContext(agent), steps: [], compactedAt: null, costBefore: null, isRunning: true },
+      }));
+      return next(e);
+    }
     const [contextBefore, costBefore] = await Promise.all([read($, measured), read($, cost)]);
     await update($, turn, () => ({ contextBefore, steps: [], compactedAt: null, costBefore, isRunning: true }));
     return next(e);
@@ -338,33 +423,47 @@ export const register: Register = on => {
 
   on('turn.step', async function* ($, e, next) {
     const result = yield* next(e);
-    if (e.agentId === undefined && result.usage !== null) {
-      const step: ContextBarStep = { context: inputSide(result.usage), output: result.usage.output_tokens };
-      await update($, turn, current => {
-        if (current === null) return current;
-        // The context only shrinks when a compaction runs mid-turn.
-        const previous = current.steps.at(-1)?.context ?? current.contextBefore;
-        const compactedAt = previous !== null && step.context < previous ? current.steps.length : current.compactedAt;
-        return { ...current, steps: [...current.steps, step], compactedAt };
-      });
+    if (result.usage === null) return result;
+    const step: ContextBarStep = { context: inputSide(result.usage), output: result.usage.output_tokens };
+    const { agentId } = e;
+    if (agentId === undefined) {
+      await update($, turn, current => (current === null ? current : addStep(current, step)));
+    } else {
+      await updateAgent($, agentId, agent => ({ start: agent.start ?? step.context, turn: addStep(agent.turn, step) }));
     }
     return result;
   });
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) {
+    const { agentId } = e;
+    if (agentId === undefined) {
       await update($, turn, current => (current === null ? current : { ...current, isRunning: false }));
+    } else if ((await read($, agents))?.[agentId] !== undefined) {
+      await updateAgent($, agentId, agent => ({ ...agent, turn: { ...agent.turn, isRunning: false } }));
     }
     return next(e);
   });
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const rows = await read($, breakdown);
-    if (e.props.hasSurvey || rows === null || rows.slices.length < 1) return next(e);
-    const [current, costNow] = await Promise.all([read($, turn), read($, cost)]);
+    const main = await read($, breakdown);
+    if (e.props.hasSurvey || main === null || main.slices.length < 1) return next(e);
+    // The agent in view, when one is: its own window and turn, by its name.
+    const { agentId } = e.props.view;
+    const agent = agentId === undefined ? undefined : ((await read($, agents))?.[agentId] ?? null);
+    const label = agentId === undefined ? null : await agentLabel($, agentId);
+    const rows = agent === undefined ? main : agent === null ? null : agentBreakdown(main, agent);
+    if (rows === null || agent === null) {
+      const { Text } = $.ui.resolve(e);
+      return <Text dimColor>{label}: no response yet</Text>;
+    }
+    const [current, costNow] = await Promise.all([
+      agent === undefined ? read($, turn) : agent.turn,
+      read($, cost),
+    ]);
     const used = rows.slices.filter(slice => slice.kind === 'used').reduce((sum, slice) => sum + slice.tokens, 0);
     const percent = Math.round((used / Math.max(rows.window, 1)) * 100);
     const summary = [
+      label,
       `${formatTokens(used)}/${formatTokens(rows.window)} (${percent}%)`,
       costNow === null ? null : formatUsd(costNow),
     ]

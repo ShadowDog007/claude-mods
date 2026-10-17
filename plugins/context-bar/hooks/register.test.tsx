@@ -75,6 +75,10 @@ function engine(on: On) {
   // The session's id: `s1`, then `s2` once a /clear has started it over.
   const session = { id: 's1' };
   on('session.id', () => ({ value: session.id }));
+  // One subagent, `a1`.
+  on('agent.list', () => ({
+    value: [{ id: 'a1', description: 'Explore the hooks', type: 'Explore', status: 'running' as const }],
+  }));
   on('turn.start', (_$, e) => ({ turnId: e.turnId }));
   on('turn.complete', () => ({ text: '' }));
   on('ui.log', () => ({ value: undefined }));
@@ -171,12 +175,23 @@ async function turn($: Engine, { contexts, ledger }: ReturnType<typeof engine>, 
   await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: false } as never);
 }
 
-function band(bodyColumns = 80, hasSurvey = false, surface: Surface = 'terminal') {
+// A run of agent `agentId` within the main turn `t1`, a request answered over
+// each of `steps`.
+async function agentRun($: Engine, { contexts }: ReturnType<typeof engine>, agentId: string, steps: number[]) {
+  contexts.push(...steps);
+  await $.turn.start({ text: 'look', turnId: `${agentId}-t`, agentId });
+  for (const [index] of steps.entries()) {
+    for await (const _ of $.turn.step({ turnId: `${agentId}-t`, index, model: 'm', messageCount: 1, agentId }));
+  }
+  await $.turn.complete({ turnId: `${agentId}-t`, agentId, answer: '', durationMs: 1, isAborted: false } as never);
+}
+
+function band(bodyColumns = 80, hasSurvey = false, surface: Surface = 'terminal', view: { agentId?: string } = {}) {
   return {
     plugin: 'context-bar',
     surface,
     component: 'AbovePrompt' as const,
-    props: { hasSurvey, isWorking: false, maxRows: 20, bodyColumns, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+    props: { hasSurvey, isWorking: false, maxRows: 20, bodyColumns, scroll: { offset: 0, bodyRows: 20 }, view },
   };
 }
 
@@ -322,6 +337,48 @@ test('lays the bar out on the desktop by each segment\'s share, in solid theme c
     await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 40k → 52k (+13k) · 1.5k out · $0.30 · steps +1.0k +6.0k +5.0k' }),
   ).toBeDefined();
   await ui.unmount();
+});
+
+test('shows the context of the agent in view, from its own requests', async ($, on) => {
+  const stub = engine(on);
+  await start($);
+  await measure($, 40_000, 1);
+  await $.turn.start({ text: 'go', turnId: 't1' });
+  stub.contexts.push(41_000);
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }));
+  await agentRun($, stub, 'a1', [12_000, 20_000, 30_000]);
+  stub.contexts.push(47_000);
+  for await (const _ of $.turn.step({ turnId: 't1', index: 1, model: 'm', messageCount: 1 }));
+  await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: false } as never);
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(band(120, false, surface, { agentId: 'a1' }));
+    expect(await ui.find({ type: 'Text', text: /Explore the hooks · 30k\/200k \(15%\) · \$1\.00/ })).toBeDefined();
+    const legendText = (await ui.find({ key: 'legend' }))!.text;
+    for (const label of ['System 12k', 'Messages 18k', 'Free 137k', 'Buffer 33k']) expect(legendText).toContain(label);
+    expect(legendText).not.toContain('MCP');
+    expect(
+      await ui.find({ type: 'Text', text: 'Last turn: 3 steps · context 30k · 1.5k out · steps ? +8.0k +10k' }),
+    ).toBeDefined();
+    await ui.unmount();
+  }
+
+  // The main conversation's turn is its own, the agent's steps not among them.
+  const main = await $.ui.mount(band(120));
+  expect(await main.find({ type: 'Text', text: /60k\/200k \(30%\)/ })).toBeDefined();
+  expect(await main.find({ type: 'Text', text: /^Last turn: 2 steps · context 40k → 47k/ })).toBeDefined();
+  await main.unmount();
+});
+
+test('says an agent in view has no response yet before its first', async ($, on) => {
+  const stub = engine(on);
+  await turn($, stub, [41_000]);
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(band(80, false, surface, { agentId: 'a1' }));
+    expect(await ui.find({ type: 'Text', text: 'Explore the hooks: no response yet' })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: /System/ })).toBe(undefined);
+    await ui.unmount();
+  }
 });
 
 test('counts a turn compacted partway from where the compaction left it', async ($, on) => {

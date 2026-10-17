@@ -14,6 +14,9 @@ export type ContextBarBreakdown = {
   slices: ContextBarSlice[];
   // The window measured against: the model's, or a smaller compaction window.
   window: number;
+  // The autocompact buffer before content reaching into it shrinks it; absent
+  // in a breakdown kept by an earlier version.
+  buffer?: number;
 };
 
 // The rows of the window that stay the same until the session's tools, skills
@@ -39,6 +42,15 @@ export type ContextBarTurn = {
   isRunning: boolean;
 };
 
+// A subagent's or teammate's context, from its own requests' reported usage,
+// as /context cannot break it down.
+export type ContextBarAgent = {
+  // The input side of its first request: its system prompt, tools and task.
+  start: number | null;
+  // Its latest turn: for a subagent, its whole run.
+  turn: ContextBarTurn;
+};
+
 declare module 'claude-code' {
   interface PluginState {
     'context-bar': {
@@ -49,6 +61,8 @@ declare module 'claude-code' {
       cost: number | null;
       turn: ContextBarTurn | null;
       counted: ContextBarCounted | null;
+      // Each agent's context, by its id.
+      agents: Record<string, ContextBarAgent> | null;
       // The /context-tools row expanded, by its call's id.
       expandedTool: string | null;
     };
