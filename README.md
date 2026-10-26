@@ -16,3 +16,4 @@ Then browse and install plugins with `/plugin`.
 | --- | --- |
 | [idle-compact](plugins/idle-compact) | Runs `/compact` while the session sits idle waiting on background work, right before the prompt cache expires. |
 | [context-bar](plugins/context-bar) | A coloured bar above the prompt showing what fills the context window, by category, and how much the last turn and its steps added. |
+| [auto-model](plugins/auto-model) | Picks opus, sonnet or haiku for a session from its first prompt, and keeps the main conversation on it until you switch with `/model`. |
