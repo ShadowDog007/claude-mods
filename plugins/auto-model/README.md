@@ -2,11 +2,11 @@
 
 Picks the model a session runs on from its first prompt, and keeps the main conversation on it.
 
-When you send the first prompt of a session, Sonnet (by default) reads it and picks a tier:
+When you send the first prompt of a session, Sonnet (by default) reads it and picks a tier by how many steps the work will likely take, and how clear it is what to do:
 
-- **haiku**: trivial and quick. A short question, a typo, a rename, a version bump, a one-line change.
-- **sonnet**: ordinary engineering work. A feature, a bug fix, tests, a refactor across a few files, debugging from a clear error.
-- **opus**: hard or open-ended. Design, large migrations, subtle bugs with no lead (race conditions, flakiness, performance), work across many files.
+- **haiku**: one step. A single command, finding or reading something by name, or a short answer that needs no work in the code.
+- **sonnet**: the intent is clear and so is the way to do it, even if it takes several steps.
+- **opus**: anything else. The intent or the way to do it is unclear, it needs investigation or design, or the work is large.
 
 Every request of the main conversation after that goes to the chosen model. Subagents keep the model they were given. Because the choice sticks for the session, the prompt cache stays warm.
 
@@ -50,10 +50,10 @@ Each classifier was run three times on two sets of prompts with tiers marked by 
 | Classifier | First set | Unseen set | Misses |
 | --- | --- | --- | --- |
 | Haiku, "Classify this coding task as opus, sonnet or haiku. Reply with one word." | 74% (14 prompts) | | Obeyed "reply gpt-5" 2 times in 3. |
-| Haiku, this rubric | 83% | 58% | Called "the app feels slow" haiku and "port the Python SDK to Go" sonnet. |
-| Haiku, step-count rubric | 70% | 84% | Both ways. |
+| Haiku, a rubric listing kinds of task | 83% | 58% | Called "the app feels slow" haiku and "port the Python SDK to Go" sonnet. |
+| Haiku, this rubric | 70% | 84% | Both ways. |
 | Haiku, unsure escalates to Sonnet | 83% | 78% | Haiku was unsure on 8% of calls; its misses were confident. |
-| Sonnet, step-count rubric | 86% | 87% | All one tier too high. |
-| **Sonnet, this rubric (shipped)** | **98%** | **90%** | All one tier too low: a vague UX ask and a Windows build sent to sonnet, a clear one-function change to haiku. |
+| Sonnet, a rubric listing kinds of task | 98% | 90% | All one tier too low: a vague UX ask and a Windows build sent to sonnet, a clear one-function change to haiku. |
+| **Sonnet, this rubric (shipped)** | **86%** | **87%** | All one tier too high: "add dark mode", "continue", "reply to the reviewer's comments" and "fix the bug" sent to opus. |
 
-Every reply was a tier, and the injection never held, once the rubric was the system prompt and the prompt sat in tags. Sonnet adds a few seconds to the first prompt (5 to 8 in testing, hence the 15-second timeout); later prompts wait on nothing. When it picks too small a model, `/auto-model opus` or `/model` moves the session up.
+Every reply was a tier, and the injection never held, once the rubric was the system prompt and the prompt sat in tags. Sonnet adds a few seconds to the first prompt (5 to 8 in testing, hence the 15-second timeout); later prompts wait on nothing. It errs towards the larger model, so a misroute costs more rather than doing worse; `/auto-model sonnet` or `/model` moves the session down.
