@@ -52,5 +52,9 @@ The classifier prompt was tested against Haiku on 22 prompts, three runs each (6
 | One line ("Classify this coding task as opus, sonnet or haiku. Reply with one word.") | 74% (14 prompts) | Sent a unit test and a stack-trace fix to haiku; obeyed "reply gpt-5" 2 times in 3; mixed case. |
 | Rubric in the user message | 89% | Unsteady on vague and mid-sized prompts. |
 | Rubric in the system prompt | 74% (14 prompts) | Promoted ordinary work to opus. |
-| Rubric and examples in the system prompt, the prompt in tags | 89% | Answered 4 of 66 questions instead of classifying them. |
-| The same, plus a closing question after the tags (shipped) | 94% | Every reply a tier; the injection never held. The misses were borderline (a unit test sent to haiku, a flaky test to sonnet). |
+| Rubric and seven examples in the system prompt, the prompt in tags | 89% | Answered 4 of 66 questions instead of classifying them. |
+| The same, plus a closing question after the tags | 94% | Every reply a tier; the injection never held. |
+| The same with no examples (shipped) | 89% | Every reply a tier; the injection never held. The misses are one tier low: a flaky CI test sent to sonnet, a stack-trace crash to haiku. |
+| The same, plus "when torn between two, pick the larger" | 88% | No better. |
+
+The shipped prompt has no examples, so it judges a prompt by the tiers' descriptions rather than by its likeness to a handful of examples, which could leave unlike prompts misrouted. When it picks too small a model, `/auto-model opus` or `/model` moves the session up.
