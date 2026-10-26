@@ -1,0 +1,27 @@
+{
+  "name": "auto-model",
+  "version": "0.1.0",
+  "description": "Picks opus, sonnet or haiku for a session from its first prompt, and keeps the main conversation on it until you switch with /model.",
+  "author": { "name": "Michael McKnight" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "classifierModel": {
+      "type": "string",
+      "title": "Classifier model",
+      "description": "The model that reads the first prompt and picks the session's model.",
+      "default": "haiku"
+    },
+    "fallbackModel": {
+      "type": "string",
+      "title": "Fallback model",
+      "description": "The model the session runs on when the classifier fails, times out or answers with no tier.",
+      "default": "sonnet"
+    },
+    "timeoutSeconds": {
+      "type": "number",
+      "title": "Classifier timeout (seconds)",
+      "description": "How long the first prompt waits on the classifier before the fallback model is taken.",
+      "default": 8
+    }
+  }
+}

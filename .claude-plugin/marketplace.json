@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "A collection of Claude Code plugins by ShadowDog007",
-    "version": "0.1.1",
+    "version": "0.2.0",
     "pluginRoot": "./plugins"
   },
   "plugins": [
@@ -21,6 +21,12 @@
       "source": "./plugins/context-bar",
       "description": "A coloured bar above the prompt showing what fills the context window, by category, and how much the last turn and its steps added.",
       "version": "0.1.1"
+    },
+    {
+      "name": "auto-model",
+      "source": "./plugins/auto-model",
+      "description": "Picks opus, sonnet or haiku for a session from its first prompt, and keeps the main conversation on it until you switch with /model.",
+      "version": "0.1.0"
     }
   ]
 }
