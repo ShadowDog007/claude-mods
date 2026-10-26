@@ -195,7 +195,7 @@ test('restores the route of a session it resumes', async ($, on) => {
 test('/auto-model pins a model, turns routing off and on again', async ($, on) => {
   const { classifier, sent } = engine(on);
   await start($);
-  expect(await command($, '')).toBe('the next prompt picks the model (classified by haiku)');
+  expect(await command($, '')).toBe('the next prompt picks the model (classified by sonnet)');
 
   expect(await command($, 'haiku')).toBe('haiku, set with /auto-model');
   await prompt($, 'design a plugin system');

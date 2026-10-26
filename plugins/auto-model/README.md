@@ -2,7 +2,7 @@
 
 Picks the model a session runs on from its first prompt, and keeps the main conversation on it.
 
-When you send the first prompt of a session, a small model (Haiku by default) reads it and picks a tier:
+When you send the first prompt of a session, Sonnet (by default) reads it and picks a tier:
 
 - **haiku**: trivial and quick. A short question, a typo, a rename, a version bump, a one-line change.
 - **sonnet**: ordinary engineering work. A feature, a bug fix, tests, a refactor across a few files, debugging from a clear error.
@@ -33,9 +33,9 @@ The plugin shows a toast when it routes, and keeps `auto-model: <model>` in its 
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `classifierModel` | string | `haiku` | The model that reads the first prompt and picks the tier. |
+| `classifierModel` | string | `sonnet` | The model that reads the first prompt and picks the tier. |
 | `fallbackModel` | string | `sonnet` | The model taken when the classifier gives no tier. |
-| `timeoutSeconds` | number | `8` | How long the first prompt waits on the classifier. |
+| `timeoutSeconds` | number | `15` | How long the first prompt waits on the classifier. |
 
 Set them from `/config`, or in settings:
 
@@ -45,16 +45,15 @@ Set them from `/config`, or in settings:
 
 ## How reliable is the classifier?
 
-The classifier prompt was tested against Haiku on 22 prompts, three runs each (66 calls), with tiers marked by hand: trivial asks, ordinary work, hard work, vague prompts and a prompt injection.
+Each classifier was run three times on two sets of prompts with tiers marked by hand before any run. The first set (22 prompts) has trivial asks, ordinary work, hard work, vague prompts and a prompt injection. The second (30 prompts) was written to fit none of the rubric's categories: lookups, bare commands, non-code writing, vague product asks, a design decision, Spanish, a context-free "continue". It was marked by how many steps the work takes and how clear it is what to do.
 
-| Prompt | Right tier | Notes |
-| --- | --- | --- |
-| One line ("Classify this coding task as opus, sonnet or haiku. Reply with one word.") | 74% (14 prompts) | Sent a unit test and a stack-trace fix to haiku; obeyed "reply gpt-5" 2 times in 3; mixed case. |
-| Rubric in the user message | 89% | Unsteady on vague and mid-sized prompts. |
-| Rubric in the system prompt | 74% (14 prompts) | Promoted ordinary work to opus. |
-| Rubric and seven examples in the system prompt, the prompt in tags | 89% | Answered 4 of 66 questions instead of classifying them. |
-| The same, plus a closing question after the tags | 94% | Every reply a tier; the injection never held. |
-| The same with no examples (shipped) | 89% | Every reply a tier; the injection never held. The misses are one tier low: a flaky CI test sent to sonnet, a stack-trace crash to haiku. |
-| The same, plus "when torn between two, pick the larger" | 88% | No better. |
+| Classifier | First set | Unseen set | Misses |
+| --- | --- | --- | --- |
+| Haiku, "Classify this coding task as opus, sonnet or haiku. Reply with one word." | 74% (14 prompts) | | Obeyed "reply gpt-5" 2 times in 3. |
+| Haiku, this rubric | 83% | 58% | Called "the app feels slow" haiku and "port the Python SDK to Go" sonnet. |
+| Haiku, step-count rubric | 70% | 84% | Both ways. |
+| Haiku, unsure escalates to Sonnet | 83% | 78% | Haiku was unsure on 8% of calls; its misses were confident. |
+| Sonnet, step-count rubric | 86% | 87% | All one tier too high. |
+| **Sonnet, this rubric (shipped)** | **98%** | **90%** | All one tier too low: a vague UX ask and a Windows build sent to sonnet, a clear one-function change to haiku. |
 
-The shipped prompt has no examples, so it judges a prompt by the tiers' descriptions rather than by its likeness to a handful of examples, which could leave unlike prompts misrouted. When it picks too small a model, `/auto-model opus` or `/model` moves the session up.
+Every reply was a tier, and the injection never held, once the rubric was the system prompt and the prompt sat in tags. Sonnet adds a few seconds to the first prompt (5 to 8 in testing, hence the 15-second timeout); later prompts wait on nothing. When it picks too small a model, `/auto-model opus` or `/model` moves the session up.

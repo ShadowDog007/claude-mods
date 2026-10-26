@@ -9,7 +9,7 @@
       "type": "string",
       "title": "Classifier model",
       "description": "The model that reads the first prompt and picks the session's model.",
-      "default": "haiku"
+      "default": "sonnet"
     },
     "fallbackModel": {
       "type": "string",
@@ -21,7 +21,7 @@
       "type": "number",
       "title": "Classifier timeout (seconds)",
       "description": "How long the first prompt waits on the classifier before the fallback model is taken.",
-      "default": 8
+      "default": 15
     }
   }
 }

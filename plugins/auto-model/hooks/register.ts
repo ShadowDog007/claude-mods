@@ -4,9 +4,9 @@ import type { EngineInterface, Register } from 'claude-code';
 import type { AutoModelRoute, AutoModelSource, AutoModelStandDown, AutoModelTier } from '../types';
 
 const TIERS: readonly AutoModelTier[] = ['haiku', 'sonnet', 'opus'];
-const DEFAULT_CLASSIFIER = 'haiku';
+const DEFAULT_CLASSIFIER = 'sonnet';
 const DEFAULT_FALLBACK = 'sonnet';
-const DEFAULT_TIMEOUT_SECONDS = 8;
+const DEFAULT_TIMEOUT_SECONDS = 15;
 // The head of a long prompt is enough to judge it, and keeps the call quick.
 const MAX_PROMPT_CHARS = 8_000;
 // Routes saved for /resume, the oldest dropped past this many.
